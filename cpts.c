@@ -231,34 +231,95 @@ static int cpts_ptp_verify(struct ptp_clock_info *ptp, unsigned int pin,
 	return 0;
 }
 
-static int cpts_external_timestamp();
+static int cpts_external_timestamp(struct cpts_pin *pin)
+{
 
-static int cpts_periodic_output();
+}
+
+static int cpts_periodic_output(struct cpts_pin *pin)
+{
+
+}
+
+static struct cpts_pin * cpts_get_pin(struct cpts *cpts, unsigned int index)
+{
+    // resolve the pin
+    if (index >= CPTS_NUM_PINS)
+        return NULL;
+    return cpts->pins + index;
+}
+
+static int cpts_setup_pin(struct cpts *cpts, unsigned int index)
+{
+    // resolve the pin
+    struct cpts_pin *pin = cpts_get_pin(cpts, index);
+    if (!pin)
+        return -EINVAL;
+
+    // request the timer for the pin
+    if(!pin->timer)
+        pin->timer = omap_dm_timer_request_by_node(pin->timerNode);
+    if(!pin->timer)
+        return -EINVAL;
+
+    // enable the pin in the cpts peripheral
+	u32 ctrl, mask;
+    switch (rq->extts.index) {
+    case 0: mask = HW1_TS_PUSH_EN; break;
+    case 1: mask = HW2_TS_PUSH_EN; break;
+    case 2: mask = HW3_TS_PUSH_EN; break;
+    case 3: mask = HW4_TS_PUSH_EN; break;
+    default: return -EINVAL;
+    }
+    ctrl = cpts_read32(cpts, control);
+    if (on)
+        ctrl |= mask;
+    else
+        ctrl &= ~mask;
+    cpts_write32(cpts, ctrl, control);
+    return 0;
+}
+
+static int cpts_disable_pin(struct cpts *cpts, unsigned int index)
+{
+    // resolve the pin
+    struct cpts_pin *pin = cpts_get_pin(cpts, index);
+    if (!pin)
+        return -EINVAL;
+
+    if (!pin->timer)
+        return 0;
+
+    omap_dm_timer_set_int_disable(pin->timer, OMAP_TIMER_INT_CAPTURE);
+    omap_dm_timer_enable(pin->timer);
+    omap_dm_timer_stop(pin->timer);
+    omap_dm_timer_free(pin->timer);
+    pin->timer = NULL;
+
+    return 0;
+}
 
 static int cpts_ptp_enable(struct ptp_clock_info *ptp,
 			   struct ptp_clock_request *rq, int on)
 {
-	int pin;
-	u32 ctrl, mask;
+	int err;
 	struct cpts *cpts = container_of(ptp, struct cpts, info);
 	switch(rq->type) {
 	case PTP_CLK_REQ_EXTTS:
-		pin = rq->extts.index;
-		switch (pin) {
-		case 0: mask = HW1_TS_PUSH_EN; break;
-		case 1: mask = HW2_TS_PUSH_EN; break;
-		case 2: mask = HW3_TS_PUSH_EN; break;
-		case 3: mask = HW4_TS_PUSH_EN; break;
-		default:
-			return -EINVAL;
-		}
-		ctrl = cpts_read32(cpts, control);
-		if (on)
-			ctrl |= mask;
-		else
-			ctrl &= ~mask;
-		cpts_write32(cpts, ctrl, control);
-		return 0;
+        if (on)
+        {
+            err = cpts_setup_pin(cpts, rq.extts.index);
+            if (err) return err;
+
+            cpts_external_timestamp
+        }
+        else
+        {
+            return cpts_disable_pin(cpts, rq.extts.index);
+        }
+        return cpts
+    case PTP_CLK_REQ_PEROUT:
+        break;
 	default:
 		break;
 	}
@@ -297,8 +358,8 @@ static struct ptp_clock_info cpts_info = {
 	.name		= "CPTS timer",
 	.max_adj	= 1000000,
 	.n_alarm    	= 0,
-	.n_ext_ts	= 4,
-	.n_pins		= 4,
+	.n_ext_ts	= CPTS_NUM_PINS,
+	.n_pins		= CPTS_NUM_PINS,
 	.pps		= 0,
 	.pin_config 	= cpts_pins,
 	.adjfreq	= cpts_ptp_adjfreq,
@@ -477,6 +538,8 @@ int cpts_register(struct device *dev, struct cpts *cpts,
     for (i = 0; i < CPTS_NUM_PINS; i++)
     {
         cpts.pins[i].timerNode = of_find_node_by_name(NULL, cpts_pins[i].name);
+        if (!cpts.pins[i].timerNode)
+            pr_warn("cpts: unable to find %s in device tree", cpts_pins[i].name);
         cpts.pins[i].timer = NULL;
     }
 
