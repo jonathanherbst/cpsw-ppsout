@@ -120,6 +120,7 @@ struct cpts_extts_state {
 };
 
 struct cpts_perout_state {
+    u32 period;
 };
 
 struct cpts_pin {
