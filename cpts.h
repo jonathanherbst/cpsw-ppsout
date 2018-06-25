@@ -28,6 +28,7 @@
 #include <linux/ptp_clock_kernel.h>
 #include <linux/skbuff.h>
 #include <linux/timecounter.h>
+#include <linux/interrupt.h>
 
 #include <arch/arm/plat-omap/include/plat/dmtimer.h>
 
@@ -110,9 +111,27 @@ struct cpts_event {
 	u32 low;
 };
 
+struct cpts_extts_state {
+    volatile u32 capture;
+    volatile bool newCapture;
+    volatile bool overflow;
+    u32 lastCapture;
+    u32 period;
+};
+
+struct cpts_perout_state {
+};
+
 struct cpts_pin {
-    struct device_node* timerNode;
-    struct omap_dm_timer* timer;
+    struct device_node *timerNode;
+    struct omap_dm_timer *timer;
+    struct ptp_pin_desc *ptp_pin;
+    struct ptp_clock_request state;
+    struct tasklet_struct maintain_tasklet;
+    union {
+        struct cpts_extts_state extts_state;
+        struct cpts_perout_state perout_state;
+    };
 };
 
 struct cpts {
