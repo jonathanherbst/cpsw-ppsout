@@ -292,7 +292,7 @@ static int cpts_start_periodic_output(struct ptp_perout_request *req, struct cpt
     omap_dm_timer_set_load(pin->timer, 1, load);
 
     // setup an estimation of the time, the interrupt will get it more accurate before we enable the output.
-    div64_u64_rem(timecounter_read(&cpts->tc), 1000000000, time_now);
+    div64_u64_rem(timecounter_read(&cpts->tc), 1000000000, &time_now);
     cycles = (u32)div_u64(time_now * pin->timer->rate, 1000000000);
 	__omap_dm_timer_write(pin->timer, OMAP_TIMER_COUNTER_REG, load + cycles, pin->timer->posted);
 
@@ -712,6 +712,7 @@ int cpts_register(struct device *dev, struct cpts *cpts,
 #ifdef CONFIG_TI_CPTS
 	int err, i;
 	unsigned long flags;
+        const char *prop_name;
 
 	cpts->info = cpts_info;
 	cpts->clock = ptp_clock_register(&cpts->info, dev);
@@ -736,12 +737,20 @@ int cpts_register(struct device *dev, struct cpts *cpts,
     for (i = 0; i < CPTS_NUM_PINS; i++)
     {
         cpts->pins[i].ptp_pin = cpts->info.pin_config + i;
-        cpts->pins[i].timerNode = of_find_node_by_name(NULL, cpts->pins[i].ptp_pin->name);
+        cpts->pins[i].timerNode = of_find_node_by_name(NULL, "timer");
+        while(cpts->pins[i].timerNode)
+        {
+            if(of_property_read_string(cpts->pins[i].timerNode, "ti,hwmods", &prop_name) == 0 &&
+                    strcmp(prop_name, cpts->pins[i].ptp_pin->name) == 0)
+                break;
+            cpts->pins[i].timerNode = of_find_node_by_name(cpts->pins[i].timerNode, "timer");
+        }
+
         if (!cpts->pins[i].timerNode)
             pr_warn("cpts: unable to find %s in device tree", cpts->pins[i].ptp_pin->name);
         cpts->pins[i].timer = NULL;
         tasklet_init(&cpts->pins[i].maintain_tasklet, cpts_maintain_pin,
-                (unsigned long)(cpts->pins + 1));
+                (unsigned long)(cpts->pins + i));
     }
 
 	cpts_clk_init(dev, cpts);
