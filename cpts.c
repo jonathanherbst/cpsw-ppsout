@@ -28,6 +28,7 @@
 #include <linux/workqueue.h>
 #include <linux/if_ether.h>
 #include <linux/if_vlan.h>
+#include <linux/math64.h>
 
 #include "cpts.h"
 
@@ -291,8 +292,8 @@ static int cpts_start_periodic_output(struct ptp_perout_request *req, struct cpt
     omap_dm_timer_set_load(pin->timer, 1, load);
 
     // setup an estimation of the time, the interrupt will get it more accurate before we enable the output.
-    time_now = timecounter_read(&cpts->tc) % 1000000000;
-    cycles = (u32)(time_now * pin->timer->rate / 1000000000);
+    div64_u64_rem(timecounter_read(&cpts->tc), 1000000000, time_now);
+    cycles = (u32)div_u64(time_now * pin->timer->rate, 1000000000);
 	__omap_dm_timer_write(pin->timer, OMAP_TIMER_COUNTER_REG, load + cycles, pin->timer->posted);
 
     omap_dm_timer_start(pin->timer);
