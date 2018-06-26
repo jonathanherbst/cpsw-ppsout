@@ -33,6 +33,8 @@
 
 #ifdef CONFIG_TI_CPTS
 
+#define AM335X_NO_PRESCALER 0xFFFFFFFF
+
 #define cpts_read32(c, r)	__raw_readl(&c->reg->r)
 #define cpts_write32(c, v, r)	__raw_writel(v, &c->reg->r)
 
@@ -258,32 +260,38 @@ static int cpts_start_external_timestamp(struct ptp_extts_request *req, struct c
     omap_dm_timer_start(pin->timer);*/
 
     omap_dm_timer_enable(pin->timer);
-	u32 ctrl = __omap_dm_timer_read(pin->timer, OMAP_TIMER_CTRL_REG, timer->posted);
+	u32 ctrl = __omap_dm_timer_read(pin->timer, OMAP_TIMER_CTRL_REG, pin->timer->posted);
     ctrl &= ~OMAP_TIMER_CTRL_GPOCFG;
-	__omap_dm_timer_write(pin->timer, OMAP_TIMER_CTRL_REG, ctrl, timer->posted);
+	__omap_dm_timer_write(pin->timer, OMAP_TIMER_CTRL_REG, ctrl, pin->timer->posted);
     pin->timer->context.tclr = ctrl;
 
     omap_dm_timer_disable(pin->timer);
+    return 0;
 }
 
 static int cpts_start_periodic_output(struct ptp_perout_request *req, struct cpts_pin *pin)
 {
+    u32 ctrl;
+    u32 load;
+    u64 time_now;
+    u32 cycles;
+    struct cpts *cpts = container_of(pin, struct cpts, pins[pin->ptp_pin->index]);
+
     omap_dm_timer_enable(pin->timer);
     omap_dm_timer_set_prescaler(pin->timer, AM335X_NO_PRESCALER);
 
-    u32 ctrl = __omap_dm_timer_read(pin->timer, OMAP_TIMER_CTRL_REG, timer->posted);
+    ctrl = __omap_dm_timer_read(pin->timer, OMAP_TIMER_CTRL_REG, pin->timer->posted);
     ctrl |= OMAP_TIMER_CTRL_GPOCFG | OMAP_TIMER_CTRL_PT | 2 << 10;
-	__omap_dm_timer_write(pin->timer, OMAP_TIMER_CTRL_REG, ctrl, timer->posted);
+	__omap_dm_timer_write(pin->timer, OMAP_TIMER_CTRL_REG, ctrl, pin->timer->posted);
 
     // setup autoload so we overflow once per second.
-    u32 load = 0ul - pin->timer->rate;
+    load = 0ul - pin->timer->rate;
     omap_dm_timer_set_load(pin->timer, 1, load);
 
     // setup an estimation of the time, the interrupt will get it more accurate before we enable the output.
-    struct cpts *cpts = container_of(pin, struct cpts, pins[pin->ptp_pin->index]);
-    u64 timeNow = timecounter_read(&cpts->tc) % 1000000000;
-    u32 cycles = (u32)(timeNow * pin->timer->rate / 1000000000);
-	__omap_dm_timer_write(pin->timer, OMAP_TIMER_COUNTER_REG, load + cycles, timer->posted);
+    time_now = timecounter_read(&cpts->tc) % 1000000000;
+    cycles = (u32)(time_now * pin->timer->rate / 1000000000);
+	__omap_dm_timer_write(pin->timer, OMAP_TIMER_COUNTER_REG, load + cycles, pin->timer->posted);
 
     omap_dm_timer_start(pin->timer);
 }
@@ -318,6 +326,8 @@ static irqreturn_t cpts_timer_interrupt(int irq, void *data)
 
 static void cpts_maintain_pin(unsigned long data)
 {
+    u32 match;
+    u32 ctrl;
     struct cpts_pin *pin = (struct cpts_pin*)data;
 
     switch(pin->state.type)
@@ -331,11 +341,11 @@ static void cpts_maintain_pin(unsigned long data)
                 pin->extts_state.period = pin->extts_state.capture - pin->extts_state.lastCapture;
 
                 // write the match value out to the timer
-                u32 match = pin->extts_state.capture + pin->extts_state.period;
+                match = pin->extts_state.capture + pin->extts_state.period;
                 __omap_dm_timer_write(pin->timer, OMAP_TIMER_MATCH_REG, match, pin->timer.posted);
 
                 // enable the timer pwm
-                u32 ctrl = __omap_dm_timer_read(pin->timer, OMAP_TIMER_CTRL_REG, pin->timer.posted);
+                ctrl = __omap_dm_timer_read(pin->timer, OMAP_TIMER_CTRL_REG, pin->timer.posted);
                 ctrl |= OMAP_TIMER_CTRL_CE;
                 __omap_dm_timer_write(pin->timer, OMAP_TIMER_CTRL_REG, ctrl, pin->timer.posted);
                 
@@ -348,9 +358,9 @@ static void cpts_maintain_pin(unsigned long data)
                 // new period is average of last used period and the latest period
                 pin->extts_state.period = (pin->extts_state.period + pin->extts_state.capture -
                         pin->extts_state.lastCapture) >> 1;
-                u32 match = pin->extts_state.capture + pin->extts_state.period;
+                match = pin->extts_state.capture + pin->extts_state.period;
 
-                u32 ctrl = __omap_dm_timer_read(pin->timer, OMAP_TIMER_CTRL_REG, pin->timer.posted);
+                ctrl = __omap_dm_timer_read(pin->timer, OMAP_TIMER_CTRL_REG, pin->timer.posted);
                 // disable the pwm
                 ctrl &= ~OMAP_TIMER_CTRL_CE;
                 __omap_dm_timer_write(pin->timer, OMAP_TIMER_CTRL_REG, ctrl, pin->timer.posted);
@@ -385,6 +395,8 @@ static struct cpts_pin * cpts_get_pin(struct cpts *cpts, unsigned int index)
 
 static int cpts_enable_pin(struct cpts *cpts, struct cpts_pin *pin)
 {
+	u32 ctrl, mask;
+
     // request the timer for the pin
     if(!pin->timer)
         pin->timer = omap_dm_timer_request_by_node(pin->timerNode);
@@ -398,7 +410,6 @@ static int cpts_enable_pin(struct cpts *cpts, struct cpts_pin *pin)
         return -EIO;
 
     // enable the pin in the cpts peripheral
-	u32 ctrl, mask;
     switch (pin->ptp_pin->index) {
     case 0: mask = HW1_TS_PUSH_EN; break;
     case 1: mask = HW2_TS_PUSH_EN; break;
@@ -442,10 +453,12 @@ static int cpts_ptp_enable(struct ptp_clock_info *ptp,
 			   struct ptp_clock_request *rq, int on)
 {
 	int err = 0;
+    struct cpts_pin *pin;
 	struct cpts *cpts = container_of(ptp, struct cpts, info);
+
 	switch(rq->type) {
 	case PTP_CLK_REQ_EXTTS:
-        struct cpts_pin *pin = cpts_get_pin(cpts, rq.extts.index);
+        pin = cpts_get_pin(cpts, rq.extts.index);
         if(!pin)
             return -EINVAL;
 
@@ -466,7 +479,7 @@ static int cpts_ptp_enable(struct ptp_clock_info *ptp,
         cpts_disable_pin(pin);
         return err;
     case PTP_CLK_REQ_PEROUT:
-        struct cpts_pin *pin = cpts_get_pin(cpts, rq.perout.index);
+        pin = cpts_get_pin(cpts, rq.perout.index);
         if(!pin)
             return -EINVAL;
 
