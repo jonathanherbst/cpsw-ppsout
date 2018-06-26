@@ -399,7 +399,7 @@ static struct cpts_pin * cpts_get_pin(struct cpts *cpts, unsigned int index)
     return cpts->pins + index;
 }
 
-static int cpts_enable_pin(struct cpts *cpts, struct cpts_pin *pin)
+static int cpts_enable_pin(struct cpts_pin *pin)
 {
 	u32 ctrl, mask;
     struct cpts *cpts = container_of(pin, struct cpts, pins[pin->ptp_pin->index]);
@@ -483,7 +483,7 @@ static int cpts_ptp_enable(struct ptp_clock_info *ptp,
 
         if (on)
         {
-            err = cpts_enable_pin(cpts, pin);
+            err = cpts_enable_pin(pin);
             if (!err)
             {
                 err = cpts_start_external_timestamp(&rq->extts, pin);
@@ -504,7 +504,7 @@ static int cpts_ptp_enable(struct ptp_clock_info *ptp,
 
         if (on)
         {
-            err = cpts_enable_pin(cpts, pin);
+            err = cpts_enable_pin(pin);
             if (!err)
             {
                 err = cpts_start_periodic_output(&rq->perout, pin);
