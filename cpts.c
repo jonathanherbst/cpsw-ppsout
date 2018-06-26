@@ -233,7 +233,7 @@ static int cpts_ptp_verify(struct ptp_clock_info *ptp, unsigned int pin,
 
 static int cpts_start_external_timestamp(struct ptp_extts_request *req, struct cpts_pin *pin)
 {
-    omap_dm_timer_enable(pin->timer);
+    /*omap_dm_timer_enable(pin->timer);
     omap_dm_timer_set_prescaler(pin->timer, AM335X_NO_PRESCALER);
 
     // set timer pin to input and setup edge to capture
@@ -255,8 +255,15 @@ static int cpts_start_external_timestamp(struct ptp_extts_request *req, struct c
 
     // enable the capture interrupt and start the timer
     omap_dm_timer_set_int_enable(pin->timer, OMAP_TIMER_INT_CAPTURE | OMAP_TIMER_INT_OVERFLOW);
-    //omap_dm_timer_enable(pin->timer);
-    omap_dm_timer_start(pin->timer);
+    omap_dm_timer_start(pin->timer);*/
+
+    omap_dm_timer_enable(pin->timer);
+	u32 ctrl = __omap_dm_timer_read(pin->timer, OMAP_TIMER_CTRL_REG, timer->posted);
+    ctrl &= ~OMAP_TIMER_CTRL_GPOCFG;
+	__omap_dm_timer_write(pin->timer, OMAP_TIMER_CTRL_REG, ctrl, timer->posted);
+    pin->timer->context.tclr = ctrl;
+
+    omap_dm_timer_disable(pin->timer);
 }
 
 static int cpts_start_periodic_output(struct ptp_perout_request *req, struct cpts_pin *pin)
@@ -266,9 +273,19 @@ static int cpts_start_periodic_output(struct ptp_perout_request *req, struct cpt
 
     u32 ctrl = __omap_dm_timer_read(pin->timer, OMAP_TIMER_CTRL_REG, timer->posted);
     ctrl |= OMAP_TIMER_CTRL_GPOCFG | OMAP_TIMER_CTRL_PT | 2 << 10;
+	__omap_dm_timer_write(pin->timer, OMAP_TIMER_CTRL_REG, ctrl, timer->posted);
 
-    
+    // setup autoload so we overflow once per second.
+    u32 load = 0ul - pin->timer->rate;
+    omap_dm_timer_set_load(pin->timer, 1, load);
 
+    // setup an estimation of the time, the interrupt will get it more accurate before we enable the output.
+    struct cpts *cpts = container_of(pin, struct cpts, pins[pin->ptp_pin->index]);
+    u64 timeNow = timecounter_read(&cpts->tc) % 1000000000;
+    u32 cycles = (u32)(timeNow * pin->timer->rate / 1000000000);
+	__omap_dm_timer_write(pin->timer, OMAP_TIMER_COUNTER_REG, load + cycles, timer->posted);
+
+    omap_dm_timer_start(pin->timer);
 }
 
 static irqreturn_t cpts_timer_interrupt(int irq, void *data)
