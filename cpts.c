@@ -402,6 +402,7 @@ static struct cpts_pin * cpts_get_pin(struct cpts *cpts, unsigned int index)
 static int cpts_enable_pin(struct cpts *cpts, struct cpts_pin *pin)
 {
 	u32 ctrl, mask;
+    struct cpts *cpts = container_of(pin, struct cpts, pins[pin->ptp_pin->index]);
 
     // request the timer for the pin
     if(!pin->timer)
@@ -438,13 +439,14 @@ static int cpts_enable_pin(struct cpts *cpts, struct cpts_pin *pin)
 static int cpts_disable_pin(struct cpts_pin *pin)
 {
 	u32 ctrl, mask;
+    struct cpts *cpts = container_of(pin, struct cpts, pins[pin->ptp_pin->index]);
 
     // if ther is no timer then there is nothing to disable
     if (!pin->timer)
         return 0;
 
     free_irq(omap_dm_timer_get_irq(pin->timer), pin);
-    tasklet_disable(pin->maintain_tasklet);
+    tasklet_disable(&pin->maintain_tasklet);
     omap_dm_timer_set_int_disable(pin->timer, OMAP_TIMER_INT_CAPTURE |
             OMAP_TIMER_INT_OVERFLOW | OMAP_TIMER_INT_MATCH);
     omap_dm_timer_enable(pin->timer);
@@ -475,13 +477,13 @@ static int cpts_ptp_enable(struct ptp_clock_info *ptp,
 
 	switch(rq->type) {
 	case PTP_CLK_REQ_EXTTS:
-        pin = cpts_get_pin(cpts, rq.extts.index);
+        pin = cpts_get_pin(cpts, rq->extts.index);
         if(!pin)
             return -EINVAL;
 
         if (on)
         {
-            err = cpts_setup_pin(cpts, pin);
+            err = cpts_enable_pin(cpts, pin);
             if (!err)
             {
                 err = cpts_start_external_timestamp(&rq->extts, pin);
@@ -496,13 +498,13 @@ static int cpts_ptp_enable(struct ptp_clock_info *ptp,
         cpts_disable_pin(pin);
         return err;
     case PTP_CLK_REQ_PEROUT:
-        pin = cpts_get_pin(cpts, rq.perout.index);
+        pin = cpts_get_pin(cpts, rq->perout.index);
         if(!pin)
             return -EINVAL;
 
         if (on)
         {
-            err = cpts_setup_pin(cpts, pin);
+            err = cpts_enable_pin(cpts, pin);
             if (!err)
             {
                 err = cpts_start_periodic_output(&rq->perout, pin);
@@ -709,7 +711,6 @@ int cpts_register(struct device *dev, struct cpts *cpts,
 #ifdef CONFIG_TI_CPTS
 	int err, i;
 	unsigned long flags;
-    const char buf[10];
 
 	cpts->info = cpts_info;
 	cpts->clock = ptp_clock_register(&cpts->info, dev);
