@@ -236,12 +236,15 @@ static int cpts_ptp_verify(struct ptp_clock_info *ptp, unsigned int pin,
 
 static int cpts_start_external_timestamp(struct ptp_extts_request *req, struct cpts_pin *pin)
 {
+    u32 ctrl, mask = OMAP_TIMER_CTRL_TCM_BOTHEDGES;
+    u32 edge = req->extts.flags;
+
+    memset(&pin->extts_state, 0, sizeof(pin->extts_stat));
+
     omap_dm_timer_enable(pin->timer);
     omap_dm_timer_set_prescaler(pin->timer, AM335X_NO_PRESCALER);
 
     // set timer pin to input and setup edge to capture
-    u32 ctrl, mask = OMAP_TIMER_CTRL_TCM_BOTHEDGES;
-    u32 edge = req->extts.flags;
 	if ((edge & PTP_RISING_EDGE) && (edge & PTP_FALLING_EDGE))
 		mask = OMAP_TIMER_CTRL_TCM_BOTHEDGES;
 	else if (edge & PTP_FALLING_EDGE)
@@ -257,7 +260,7 @@ static int cpts_start_external_timestamp(struct ptp_extts_request *req, struct c
     omap_dm_timer_set_load(pin->timer, 1, 0);
 
     // enable the capture interrupt and start the timer
-    omap_dm_timer_set_int_enable(pin->timer, OMAP_TIMER_INT_CAPTURE);
+    omap_dm_timer_set_int_enable(pin->timer, OMAP_TIMER_INT_CAPTURE | OMAP_TIMER_INT_OVERFLOW);
     omap_dm_timer_start(pin->timer);
 
     return 0;
@@ -271,12 +274,15 @@ static int cpts_start_periodic_output(struct ptp_perout_request *req, struct cpt
     u32 cycles;
     struct cpts *cpts = container_of(pin, struct cpts, pins[pin->ptp_pin->index]);
 
+    memset(&pin->perout_state, 0, sizeof(pin->perout_state));
+
     omap_dm_timer_enable(pin->timer);
     omap_dm_timer_set_prescaler(pin->timer, AM335X_NO_PRESCALER);
 
     ctrl = __omap_dm_timer_read(pin->timer, OMAP_TIMER_CTRL_REG, pin->timer->posted);
     ctrl |= OMAP_TIMER_CTRL_GPOCFG | OMAP_TIMER_CTRL_PT | 2 << 10;
 	__omap_dm_timer_write(pin->timer, OMAP_TIMER_CTRL_REG, ctrl, pin->timer->posted);
+    pin->timer->context.tclr = ctrl;
 
     // setup autoload so we overflow once per second.
     load = 0ul - pin->timer->rate;
@@ -305,7 +311,11 @@ static irqreturn_t cpts_timer_interrupt(int irq, void *data)
             pin->extts_state.capture = __omap_dm_timer_read(pin->timer,
                     OMAP_TIMER_CAPTURE_REG, pin->timer->posted);
             pin->extts_state.newCapture = true;
-            tasklet_schedule(&pin->maintain_tasklet);
+            tasklet_schedule(&pin->capture_tasklet);
+        }
+        if(irq_status & OMAP_TIMER_INT_OVERFLOW)
+        {
+            tasklet_schedule(&pin->overflow_tasklet);
         }
         break;
     case PTP_CLK_REQ_PEROUT:
@@ -318,53 +328,94 @@ static irqreturn_t cpts_timer_interrupt(int irq, void *data)
     return IRQ_HANDLED;
 }
 
-static void cpts_maintain_pin(unsigned long data)
+static s32 cpts_extts_deficit_avg(struct cpts_pin *pin)
 {
-    u32 match;
+    int i;
+    s64 sum = 0;
+
+    for(i = 0; i < CPTS_AVERAGE_LEN; ++i)
+        sum += pin->extts_state.deficit[i];
+
+    return (s32)div_s64(sum, CPTS_AVERAGE_LEN);
+}
+
+static void cpts_pin_capture_bottom_end(unsigned long data)
+{
     u32 ctrl;
     struct cpts_pin *pin = (struct cpts_pin*)data;
 
     switch(pin->state.type)
     {
     case PTP_CLK_REQ_EXTTS:
-        if(pin->extts_state.newCapture)
-        {
-            pin->extts_state.newCapture = false;
-            if (pin->extts_state.lastCapture != 0 && pin->extts_state.period == 0)
-            { // second capture, time to setup the timer pwm
-                pin->extts_state.period = pin->extts_state.capture - pin->extts_state.lastCapture;
-                pin->extts_state.load = 0ul - pin->extts_state.period;
+        if (pin->extts_state.last_capture_valid && pin->extts_state.period == 0)
+        { // ready to make an initial period calculation
+            pin->extts_state.period = pin->extts_state.capture - pin->extts_state.lastCapture;
+            pin->extts_state.load = 0ul - pin->extts_state.period;
+            pin->extts_state.period_deficit = 0;
 
-                // write load and load it
+            // write load and load it.
+            __omap_dm_timer_write(pin->timer, OMAP_TIMER_LOAD_REG, pin->extts_state.load, pin->timer->posted);
+            // trigger so counter is after load value, let future interrupts fix the error
+            omap_dm_timer_trigger(pin->timer);
+
+            pin->timer->context.tldr = pin->extts_state.load;
+            pin->extts_state.last_capture_valid = false;
+            break;
+        }
+        else if(pin->extts_state.period != 0)
+        { // initial period is calculated, need to fix the load value to match the period
+            // @todo, detect period error
+
+            if(pin->extts_state.capture > (0ul - pin->extts_state.period / 2))
+            { // output is ahead of input.
+                pin->extts_state.deficit[pin->extts_state.pd_index] = -(s32)(0ul - pin->extts_state.capture);
+                pin->extts_state.load -= cpts_extts_deficit_avg(pin);
+                // let the overflow bottom end take care of setting the timer
+            }
+            else
+            { // input is ahead of output
+                pin->extts_state.deficit[pin->extts_state.pd_index] = 
+                    (s32)(pin->extts_state.capture - pin->extts_state.load);
+                pin->extts_state.load -= cpts_extts_deficit_avg(pin);
+
+                // we're just past the overflow so setup the next load
                 __omap_dm_timer_write(pin->timer, OMAP_TIMER_LOAD_REG, pin->extts_state.load, pin->timer->posted);
-                omap_dm_timer_trigger(pin->timer);
-
                 pin->timer->context.tldr = pin->extts_state.load;
             }
-            else if(pin->extts_state.period != 0)
-            { // make adjustments to the period
-                // new period is average of last used period and the latest period
-                pin->extts_state.period = (pin->extts_state.period + pin->extts_state.capture -
-                        pin->extts_state.lastCapture) >> 1;
-                match = pin->extts_state.capture + pin->extts_state.period;
+            pr_debug("cpts: %s load value: %d", pin->ptp_pin->name, pin->extts_state.load);
+            pin->extts_state.pd_index = (pin->extts_state.pd_index + 1) & (CPTS_AVERAGE_LEN - 1);
+        }
+        pin->extts_state.lastCapture = pin->extts_state.capture;
+        pin->extts_state.last_capture_valid = true;
+        break;
+    case PTP_CLK_REQ_PEROUT:
+    default:
+        break;
+    }
+}
 
+static void cpts_pin_overflow_bottom_end(unsigned long data)
+{
+    u32 ctrl;
+    s32 avg;
+    struct cpts_pin *pin = (struct cpts_pin*)data;
+
+    switch(pin->state.type)
+    {
+    case PTP_CLK_REQ_EXTTS:
+        if(pin->extts_state.period != 0)
+        {
+            __omap_dm_timer_write(pin->timer, OMAP_TIMER_LOAD_REG, pin->extts_state.load, pin->timer->posted);
+            pin->timer->context.tldr = pin->extts_state.load;
+
+            avg = cpts_extts_deficit_avg(pin);
+            if(avg <= 2 && avg >= -2)
+            { // clock is close enough, turn on output.
                 ctrl = __omap_dm_timer_read(pin->timer, OMAP_TIMER_CTRL_REG, pin->timer->posted);
-                // disable the pwm
-                ctrl &= ~OMAP_TIMER_CTRL_CE;
-                __omap_dm_timer_write(pin->timer, OMAP_TIMER_CTRL_REG, ctrl, pin->timer->posted);
-
-                // set the match value
-                __omap_dm_timer_write(pin->timer, OMAP_TIMER_MATCH_REG, match, pin->timer->posted);
-                
-                // enable the pwm
                 ctrl |= OMAP_TIMER_CTRL_CE;
                 __omap_dm_timer_write(pin->timer, OMAP_TIMER_CTRL_REG, ctrl, pin->timer->posted);
-
-                // save registers
-                pin->timer->context.tmar = match;
                 pin->timer->context.tclr = ctrl;
             }
-            pin->extts_state.lastCapture = pin->extts_state.capture;
         }
         break;
     case PTP_CLK_REQ_PEROUT:
@@ -392,7 +443,8 @@ static int cpts_enable_pin(struct cpts_pin *pin)
     if(!pin->timer)
         return -EINVAL;
 
-    tasklet_enable(&pin->maintain_tasklet);
+    tasklet_enable(&pin->capture_tasklet);
+    tasklet_enable(&pin->overflow_tasklet);
     // request the timer interrupt
     if (request_irq(omap_dm_timer_get_irq(pin->timer), cpts_timer_interrupt, IRQF_TIMER,
                 pin->ptp_pin->name, pin))
@@ -408,7 +460,6 @@ static int cpts_enable_pin(struct cpts_pin *pin)
     }
     ctrl = cpts_read32(cpts, control);
     ctrl |= mask;
-        ctrl &= ~mask;
     cpts_write32(cpts, ctrl, control);
 
     // setup the timer clock source
@@ -428,7 +479,8 @@ static int cpts_disable_pin(struct cpts_pin *pin)
         return 0;
 
     free_irq(omap_dm_timer_get_irq(pin->timer), pin);
-    tasklet_disable(&pin->maintain_tasklet);
+    tasklet_disable(&pin->capture_tasklet);
+    tasklet_disable(&pin->overflow_tasklet);
     omap_dm_timer_set_int_disable(pin->timer, OMAP_TIMER_INT_CAPTURE |
             OMAP_TIMER_INT_OVERFLOW | OMAP_TIMER_INT_MATCH);
     omap_dm_timer_enable(pin->timer);
@@ -730,7 +782,9 @@ int cpts_register(struct device *dev, struct cpts *cpts,
         if (!cpts->pins[i].timerNode)
             pr_warn("cpts: unable to find %s in device tree", cpts->pins[i].ptp_pin->name);
         cpts->pins[i].timer = NULL;
-        tasklet_init(&cpts->pins[i].maintain_tasklet, cpts_maintain_pin,
+        tasklet_init(&cpts->pins[i].capture_tasklet, cpts_pin_capture_bottom_end,
+                (unsigned long)(cpts->pins + i));
+        tasklet_init(&cpts->pins[i].overflow_tasklet, cpts_pin_overflow_bottom_end,
                 (unsigned long)(cpts->pins + i));
     }
 

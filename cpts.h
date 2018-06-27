@@ -103,6 +103,7 @@ enum {
 #define CPTS_FIFO_DEPTH 16
 #define CPTS_MAX_EVENTS 32
 #define CPTS_NUM_PINS 4
+#define CPTS_AVERAGE_LEN 8  // needs to be power of 2
 
 struct cpts_event {
 	struct list_head list;
@@ -113,10 +114,12 @@ struct cpts_event {
 
 struct cpts_extts_state {
     volatile u32 capture;
-    volatile bool newCapture;
-    u32 lastCapture;
+    u32 last_capture;
+    bool last_capture_valid;
     u32 period;
     u32 load;
+    unsigned long pd_index;
+    s32 deficit[CPTS_AVERAGE_LEN];
 };
 
 struct cpts_perout_state {
@@ -128,7 +131,8 @@ struct cpts_pin {
     struct omap_dm_timer *timer;
     struct ptp_pin_desc *ptp_pin;
     struct ptp_clock_request state;
-    struct tasklet_struct maintain_tasklet;
+    struct tasklet_struct capture_tasklet;
+    struct tasklet_struct overflow_tasklet;
     union {
         struct cpts_extts_state extts_state;
         struct cpts_perout_state perout_state;
