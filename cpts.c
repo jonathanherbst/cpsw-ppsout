@@ -237,9 +237,9 @@ static int cpts_ptp_verify(struct ptp_clock_info *ptp, unsigned int pin,
 static int cpts_start_external_timestamp(struct ptp_extts_request *req, struct cpts_pin *pin)
 {
     u32 ctrl, mask = OMAP_TIMER_CTRL_TCM_BOTHEDGES;
-    u32 edge = req->extts.flags;
+    u32 edge = req->flags;
 
-    memset(&pin->extts_state, 0, sizeof(pin->extts_stat));
+    memset(&pin->extts_state, 0, sizeof(pin->extts_state));
 
     omap_dm_timer_enable(pin->timer);
     omap_dm_timer_set_prescaler(pin->timer, AM335X_NO_PRESCALER);
@@ -251,9 +251,9 @@ static int cpts_start_external_timestamp(struct ptp_extts_request *req, struct c
 		mask = OMAP_TIMER_CTRL_TCM_HIGHTOLOW;
 	else if (edge & PTP_RISING_EDGE)
 		mask = OMAP_TIMER_CTRL_TCM_LOWTOHIGH;
-	ctrl = __omap_dm_timer_read(pin->timer, OMAP_TIMER_CTRL_REG, timer->posted);
+	ctrl = __omap_dm_timer_read(pin->timer, OMAP_TIMER_CTRL_REG, pin->timer->posted);
 	ctrl |= mask | OMAP_TIMER_CTRL_GPOCFG | 1 << 10;
-	__omap_dm_timer_write(pin->timer, OMAP_TIMER_CTRL_REG, ctrl, timer->posted);
+	__omap_dm_timer_write(pin->timer, OMAP_TIMER_CTRL_REG, ctrl, pin->timer->posted);
     pin->timer->context.tclr = ctrl;
 
     // autoload to zero
@@ -310,7 +310,6 @@ static irqreturn_t cpts_timer_interrupt(int irq, void *data)
         {
             pin->extts_state.capture = __omap_dm_timer_read(pin->timer,
                     OMAP_TIMER_CAPTURE_REG, pin->timer->posted);
-            pin->extts_state.newCapture = true;
             tasklet_schedule(&pin->capture_tasklet);
         }
         if(irq_status & OMAP_TIMER_INT_OVERFLOW)
@@ -341,7 +340,6 @@ static s32 cpts_extts_deficit_avg(struct cpts_pin *pin)
 
 static void cpts_pin_capture_bottom_end(unsigned long data)
 {
-    u32 ctrl;
     struct cpts_pin *pin = (struct cpts_pin*)data;
 
     switch(pin->state.type)
@@ -349,9 +347,8 @@ static void cpts_pin_capture_bottom_end(unsigned long data)
     case PTP_CLK_REQ_EXTTS:
         if (pin->extts_state.last_capture_valid && pin->extts_state.period == 0)
         { // ready to make an initial period calculation
-            pin->extts_state.period = pin->extts_state.capture - pin->extts_state.lastCapture;
+            pin->extts_state.period = pin->extts_state.capture - pin->extts_state.last_capture;
             pin->extts_state.load = 0ul - pin->extts_state.period;
-            pin->extts_state.period_deficit = 0;
 
             // write load and load it.
             __omap_dm_timer_write(pin->timer, OMAP_TIMER_LOAD_REG, pin->extts_state.load, pin->timer->posted);
@@ -385,7 +382,7 @@ static void cpts_pin_capture_bottom_end(unsigned long data)
             pr_debug("cpts: %s load value: %d", pin->ptp_pin->name, pin->extts_state.load);
             pin->extts_state.pd_index = (pin->extts_state.pd_index + 1) & (CPTS_AVERAGE_LEN - 1);
         }
-        pin->extts_state.lastCapture = pin->extts_state.capture;
+        pin->extts_state.last_capture = pin->extts_state.capture;
         pin->extts_state.last_capture_valid = true;
         break;
     case PTP_CLK_REQ_PEROUT:
