@@ -236,7 +236,7 @@ static int cpts_ptp_verify(struct ptp_clock_info *ptp, unsigned int pin,
 
 static int cpts_start_external_timestamp(struct ptp_extts_request *req, struct cpts_pin *pin)
 {
-    /*omap_dm_timer_enable(pin->timer);
+    omap_dm_timer_enable(pin->timer);
     omap_dm_timer_set_prescaler(pin->timer, AM335X_NO_PRESCALER);
 
     // set timer pin to input and setup edge to capture
@@ -249,7 +249,7 @@ static int cpts_start_external_timestamp(struct ptp_extts_request *req, struct c
 	else if (edge & PTP_RISING_EDGE)
 		mask = OMAP_TIMER_CTRL_TCM_LOWTOHIGH;
 	ctrl = __omap_dm_timer_read(pin->timer, OMAP_TIMER_CTRL_REG, timer->posted);
-	ctrl |= mask | OMAP_TIMER_CTRL_GPOCFG | 2 << 10;
+	ctrl |= mask | OMAP_TIMER_CTRL_GPOCFG | 1 << 10;
 	__omap_dm_timer_write(pin->timer, OMAP_TIMER_CTRL_REG, ctrl, timer->posted);
     pin->timer->context.tclr = ctrl;
 
@@ -257,18 +257,9 @@ static int cpts_start_external_timestamp(struct ptp_extts_request *req, struct c
     omap_dm_timer_set_load(pin->timer, 1, 0);
 
     // enable the capture interrupt and start the timer
-    omap_dm_timer_set_int_enable(pin->timer, OMAP_TIMER_INT_CAPTURE | OMAP_TIMER_INT_OVERFLOW);
-    omap_dm_timer_start(pin->timer);*/
+    omap_dm_timer_set_int_enable(pin->timer, OMAP_TIMER_INT_CAPTURE);
+    omap_dm_timer_start(pin->timer);
 
-    u32 ctrl;
-
-    omap_dm_timer_enable(pin->timer);
-	ctrl = __omap_dm_timer_read(pin->timer, OMAP_TIMER_CTRL_REG, pin->timer->posted);
-    ctrl &= ~OMAP_TIMER_CTRL_GPOCFG;
-	__omap_dm_timer_write(pin->timer, OMAP_TIMER_CTRL_REG, ctrl, pin->timer->posted);
-    pin->timer->context.tclr = ctrl;
-
-    omap_dm_timer_disable(pin->timer);
     return 0;
 }
 
@@ -316,10 +307,6 @@ static irqreturn_t cpts_timer_interrupt(int irq, void *data)
             pin->extts_state.newCapture = true;
             tasklet_schedule(&pin->maintain_tasklet);
         }
-        if(irq_status & OMAP_TIMER_INT_OVERFLOW)
-        {
-            pin->extts_state.overflow = true;
-        }
         break;
     case PTP_CLK_REQ_PEROUT:
     default:
@@ -346,19 +333,13 @@ static void cpts_maintain_pin(unsigned long data)
             if (pin->extts_state.lastCapture != 0 && pin->extts_state.period == 0)
             { // second capture, time to setup the timer pwm
                 pin->extts_state.period = pin->extts_state.capture - pin->extts_state.lastCapture;
+                pin->extts_state.load = 0ul - pin->extts_state.period;
 
-                // write the match value out to the timer
-                match = pin->extts_state.capture + pin->extts_state.period;
-                __omap_dm_timer_write(pin->timer, OMAP_TIMER_MATCH_REG, match, pin->timer->posted);
+                // write load and load it
+                __omap_dm_timer_write(pin->timer, OMAP_TIMER_LOAD_REG, pin->extts_state.load, pin->timer->posted);
+                omap_dm_timer_trigger(pin->timer);
 
-                // enable the timer pwm
-                ctrl = __omap_dm_timer_read(pin->timer, OMAP_TIMER_CTRL_REG, pin->timer->posted);
-                ctrl |= OMAP_TIMER_CTRL_CE;
-                __omap_dm_timer_write(pin->timer, OMAP_TIMER_CTRL_REG, ctrl, pin->timer->posted);
-                
-                // save registers
-                pin->timer->context.tmar = match;
-                pin->timer->context.tclr = ctrl;
+                pin->timer->context.tldr = pin->extts_state.load;
             }
             else if(pin->extts_state.period != 0)
             { // make adjustments to the period

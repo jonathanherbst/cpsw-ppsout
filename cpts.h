@@ -114,9 +114,9 @@ struct cpts_event {
 struct cpts_extts_state {
     volatile u32 capture;
     volatile bool newCapture;
-    volatile bool overflow;
     u32 lastCapture;
     u32 period;
+    u32 load;
 };
 
 struct cpts_perout_state {
