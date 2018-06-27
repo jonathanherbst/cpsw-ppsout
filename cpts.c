@@ -242,7 +242,6 @@ static int cpts_start_external_timestamp(struct ptp_extts_request *req, struct c
     memset(&pin->extts_state, 0, sizeof(pin->extts_state));
 
     omap_dm_timer_enable(pin->timer);
-    omap_dm_timer_set_prescaler(pin->timer, AM335X_NO_PRESCALER);
 
     // set timer pin to input and setup edge to capture
 	if ((edge & PTP_RISING_EDGE) && (edge & PTP_FALLING_EDGE))
@@ -251,10 +250,12 @@ static int cpts_start_external_timestamp(struct ptp_extts_request *req, struct c
 		mask = OMAP_TIMER_CTRL_TCM_HIGHTOLOW;
 	else if (edge & PTP_RISING_EDGE)
 		mask = OMAP_TIMER_CTRL_TCM_LOWTOHIGH;
-	ctrl = __omap_dm_timer_read(pin->timer, OMAP_TIMER_CTRL_REG, pin->timer->posted);
-	ctrl |= mask | OMAP_TIMER_CTRL_GPOCFG | 1 << 10;
+	ctrl = mask | OMAP_TIMER_CTRL_GPOCFG | 1 << 10;
 	__omap_dm_timer_write(pin->timer, OMAP_TIMER_CTRL_REG, ctrl, pin->timer->posted);
     pin->timer->context.tclr = ctrl;
+    omap_dm_timer_disable(pin->timer);
+
+    pr_info("cpts: start extts timer ctrl %d\n", ctrl);
 
     // autoload to zero
     omap_dm_timer_set_load(pin->timer, 1, 0);
@@ -262,6 +263,7 @@ static int cpts_start_external_timestamp(struct ptp_extts_request *req, struct c
     // enable the capture interrupt and start the timer
     omap_dm_timer_set_int_enable(pin->timer, OMAP_TIMER_INT_CAPTURE | OMAP_TIMER_INT_OVERFLOW);
     omap_dm_timer_start(pin->timer);
+    omap_dm_timer_trigger(pin->timer);
 
     return 0;
 }
@@ -342,6 +344,8 @@ static void cpts_pin_capture_bottom_end(unsigned long data)
 {
     struct cpts_pin *pin = (struct cpts_pin*)data;
 
+    pr_info("cpts: capture hit");
+
     switch(pin->state.type)
     {
     case PTP_CLK_REQ_EXTTS:
@@ -396,6 +400,8 @@ static void cpts_pin_overflow_bottom_end(unsigned long data)
     u32 ctrl;
     s32 avg;
     struct cpts_pin *pin = (struct cpts_pin*)data;
+
+    pr_info("cpts: overflow hit");
 
     switch(pin->state.type)
     {
@@ -462,7 +468,7 @@ static int cpts_enable_pin(struct cpts_pin *pin)
     // setup the timer clock source
     omap_dm_timer_set_source(pin->timer, OMAP_TIMER_SRC_SYS_CLK);
     pin->timer->rate = clk_get_rate(pin->timer->fclk);
-    pr_debug("cpts: timer rate: %lu Hz", pin->timer->rate);
+    pr_info("cpts: timer rate: %lu Hz", pin->timer->rate);
     return 0;
 }
 
@@ -505,29 +511,36 @@ static int cpts_ptp_enable(struct ptp_clock_info *ptp,
 	int err = 0;
     struct cpts_pin *pin;
 	struct cpts *cpts = container_of(ptp, struct cpts, info);
+        pr_info("cpts: ptp_enable %d\n", rq->type);
 
 	switch(rq->type) {
 	case PTP_CLK_REQ_EXTTS:
-        pr_debug("cpts: request to setup extts on pin %d", rq->extts.index);
+        pr_info("cpts: request to setup extts on pin %d\n", rq->extts.index);
         pin = cpts_get_pin(cpts, rq->extts.index);
         if(!pin)
-            pr_warn("cpts: unable to get pin %d", rq->extts.index);
+        {
+            pr_warn("cpts: unable to get pin %d\n", rq->extts.index);
             return -EINVAL;
+        }
 
+        pr_info("cpts: check pin on %d\n", on);
         if (on)
         {
+            pr_info("cpts: enable pin\n");
             err = cpts_enable_pin(pin);
             if (!err)
             {
+            	pr_info("cpts: start pin\n");
                 err = cpts_start_external_timestamp(&rq->extts, pin);
                 if (!err)
                 {
+                    pr_info("cpts: start success %d\n", rq->extts.index);
                     pin->state = *rq;
                     return 0;
                 }
-                pr_warn("cpts: start failed %d", err);
+                pr_warn("cpts: start failed %d\n", err);
             }
-            pr_warn("cpts: enable failed %d", err);
+            pr_warn("cpts: enable failed %d\n", err);
         }
 
         cpts_disable_pin(pin);
@@ -812,6 +825,7 @@ void cpts_unregister(struct cpts *cpts)
 
     for (i = 0; i < CPTS_NUM_PINS; i++)
     {
+        cpts_disable_pin(&cpts->pins[i]);
         if(cpts->pins[i].timer) omap_dm_timer_free(cpts->pins[i].timer);
         if(cpts->pins[i].timerNode) of_node_put(cpts->pins[i].timerNode);
     }
