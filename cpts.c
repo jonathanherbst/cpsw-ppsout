@@ -511,8 +511,10 @@ static int cpts_ptp_enable(struct ptp_clock_info *ptp,
 
 	switch(rq->type) {
 	case PTP_CLK_REQ_EXTTS:
+        pr_debug("cpts: request to setup extts on pin %d", rq->extts.index);
         pin = cpts_get_pin(cpts, rq->extts.index);
         if(!pin)
+            pr_warn("cpts: unable to get pin %d", rq->extts.index);
             return -EINVAL;
 
         if (on)
@@ -526,7 +528,9 @@ static int cpts_ptp_enable(struct ptp_clock_info *ptp,
                     pin->state = *rq;
                     return 0;
                 }
+                pr_warn("cpts: start failed %d", err);
             }
+            pr_warn("cpts: enable failed %d", err);
         }
 
         cpts_disable_pin(pin);
