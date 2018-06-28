@@ -446,8 +446,8 @@ static int cpts_enable_pin(struct cpts_pin *pin)
     if(!pin->timer)
         return -EINVAL;
 
-    tasklet_enable(&pin->capture_tasklet);
-    tasklet_enable(&pin->overflow_tasklet);
+    //tasklet_enable(&pin->capture_tasklet);
+    //tasklet_enable(&pin->overflow_tasklet);
     // request the timer interrupt
     if (request_irq(omap_dm_timer_get_irq(pin->timer), cpts_timer_interrupt, IRQF_TIMER,
                 pin->ptp_pin->name, pin))
@@ -482,8 +482,10 @@ static int cpts_disable_pin(struct cpts_pin *pin)
         return 0;
 
     free_irq(omap_dm_timer_get_irq(pin->timer), pin);
-    tasklet_disable(&pin->capture_tasklet);
-    tasklet_disable(&pin->overflow_tasklet);
+    //tasklet_disable(&pin->capture_tasklet);
+    //tasklet_disable(&pin->overflow_tasklet);
+    cancel_work_sync(&pin->capture_work);
+    cancel_work_sync(&pin->overflow_work);
     omap_dm_timer_set_int_disable(pin->timer, OMAP_TIMER_INT_CAPTURE |
             OMAP_TIMER_INT_OVERFLOW | OMAP_TIMER_INT_MATCH);
     omap_dm_timer_enable(pin->timer);
@@ -796,10 +798,12 @@ int cpts_register(struct device *dev, struct cpts *cpts,
         if (!cpts->pins[i].timerNode)
             pr_warn("cpts: unable to find %s in device tree", cpts->pins[i].ptp_pin->name);
         cpts->pins[i].timer = NULL;
-        tasklet_init(&cpts->pins[i].capture_tasklet, cpts_pin_capture_bottom_end,
-                (unsigned long)(cpts->pins + i));
-        tasklet_init(&cpts->pins[i].overflow_tasklet, cpts_pin_overflow_bottom_end,
-                (unsigned long)(cpts->pins + i));
+        //tasklet_init(&cpts->pins[i].capture_tasklet, cpts_pin_capture_bottom_end,
+        //        (unsigned long)(cpts->pins + i));
+        //tasklet_init(&cpts->pins[i].overflow_tasklet, cpts_pin_overflow_bottom_end,
+        //        (unsigned long)(cpts->pins + i));
+        INIT_WORK(&cpts->pins[i].capture_work, cpts_pin_capture_bottom_end);
+        INIT_WORK(&cpts->pins[i].overflow_work, cpts_pin_overflow_bottom_end);
     }
 
 	cpts_clk_init(dev, cpts);

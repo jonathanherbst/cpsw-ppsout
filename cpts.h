@@ -131,8 +131,10 @@ struct cpts_pin {
     struct omap_dm_timer *timer;
     struct ptp_pin_desc *ptp_pin;
     struct ptp_clock_request state;
-    struct tasklet_struct capture_tasklet;
-    struct tasklet_struct overflow_tasklet;
+    //struct tasklet_struct capture_tasklet;
+    //struct tasklet_struct overflow_tasklet;
+    struct work_struct capture_work;
+    struct work_struct overflow_work;
     union {
         struct cpts_extts_state extts_state;
         struct cpts_perout_state perout_state;
