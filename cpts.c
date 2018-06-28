@@ -245,7 +245,7 @@ static void cpts_print_timer_value(unsigned long data)
     //ctrl = omap_dm_timer_read_status(pin->timer);
     ctrl = readl_relaxed(pin->timer->irq_ena);
 
-    pr_info("cpts: %s counter val %u, tasklet state %lu, tasklet count %d\n", pin->ptp_pin->name, omap_dm_timer_read_counter(pin->timer), pin->capture_tasklet.state, pin->capture_tasklet.count.counter);
+    pr_info("cpts: %s counter val %u\n", pin->ptp_pin->name, omap_dm_timer_read_counter(pin->timer));
 }
 
 static int cpts_start_external_timestamp(struct ptp_extts_request *req, struct cpts_pin *pin)
@@ -328,11 +328,11 @@ static irqreturn_t cpts_timer_interrupt(int irq, void *data)
         {
             pin->extts_state.capture = __omap_dm_timer_read(pin->timer,
                     OMAP_TIMER_CAPTURE_REG, pin->timer->posted);
-            tasklet_schedule(&pin->capture_tasklet);
+            schedule_work(&pin->capture_work);
         }
         if(irq_status & OMAP_TIMER_INT_OVERFLOW)
         {
-            tasklet_schedule(&pin->overflow_tasklet);
+            schedule_work(&pin->overflow_work);
         }
         break;
     case PTP_CLK_REQ_PEROUT:
@@ -356,9 +356,9 @@ static s32 cpts_extts_deficit_avg(struct cpts_pin *pin)
     return (s32)div_s64(sum, CPTS_AVERAGE_LEN);
 }
 
-static void cpts_pin_capture_bottom_end(unsigned long data)
+static void cpts_pin_capture_bottom_end(struct work_struct *work)
 {
-    struct cpts_pin *pin = (struct cpts_pin*)data;
+    struct cpts_pin *pin = continer_of(work, struct cpts_pin, capture_work);
 
     pr_info("cpts: capture hit");
 
@@ -411,11 +411,11 @@ static void cpts_pin_capture_bottom_end(unsigned long data)
     }
 }
 
-static void cpts_pin_overflow_bottom_end(unsigned long data)
+static void cpts_pin_overflow_bottom_end(struct work_struct *work)
 {
     u32 ctrl;
     s32 avg;
-    struct cpts_pin *pin = (struct cpts_pin*)data;
+    struct cpts_pin *pin = continer_of(work, struct cpts_pin, overflow_work);
 
     pr_info("cpts: overflow hit");
 
