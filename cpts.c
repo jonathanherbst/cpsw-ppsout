@@ -234,6 +234,15 @@ static int cpts_ptp_verify(struct ptp_clock_info *ptp, unsigned int pin,
 	return 0;
 }
 
+static void cpts_print_timer_value(unsigned long data)
+{
+    struct cpts_pin *pin = (struct cpts_pin*)data;
+
+    mod_timer(&pin->extts_state.timer, jiffies + msecs_to_jiffies(1000));
+
+    pr_info("cpts: counter val %lu\n", omap_dm_timer_read_counter(pin->timer));
+}
+
 static int cpts_start_external_timestamp(struct ptp_extts_request *req, struct cpts_pin *pin)
 {
     u32 ctrl, mask = OMAP_TIMER_CTRL_TCM_BOTHEDGES;
@@ -263,7 +272,9 @@ static int cpts_start_external_timestamp(struct ptp_extts_request *req, struct c
     // enable the capture interrupt and start the timer
     omap_dm_timer_set_int_enable(pin->timer, OMAP_TIMER_INT_CAPTURE | OMAP_TIMER_INT_OVERFLOW);
     omap_dm_timer_start(pin->timer);
-    omap_dm_timer_trigger(pin->timer);
+
+    setup_timer(&pin->extts_state.timer, cpts_print_timer_value, (unsigned long)pin);
+    mod_timer(&pin->extts_state.timer, jiffies + msecs_to_jiffies(1000));
 
     return 0;
 }
@@ -490,6 +501,8 @@ static int cpts_disable_pin(struct cpts_pin *pin)
     omap_dm_timer_stop(pin->timer);
     omap_dm_timer_free(pin->timer);
     pin->timer = NULL;
+
+    del_timer(&pin->extts_state.timer);
 
     switch (pin->ptp_pin->index) {
     case 0: mask = HW1_TS_PUSH_EN; break;

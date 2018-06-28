@@ -29,6 +29,7 @@
 #include <linux/skbuff.h>
 #include <linux/timecounter.h>
 #include <linux/interrupt.h>
+#include <linux/timer.h>
 
 #include <arch/arm/plat-omap/include/plat/dmtimer.h>
 
@@ -120,6 +121,7 @@ struct cpts_extts_state {
     u32 load;
     unsigned long pd_index;
     s32 deficit[CPTS_AVERAGE_LEN];
+    struct timer_list timer;
 };
 
 struct cpts_perout_state {
