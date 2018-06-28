@@ -234,6 +234,20 @@ static int cpts_ptp_verify(struct ptp_clock_info *ptp, unsigned int pin,
 	return 0;
 }
 
+static void cpts_print_timer_value(unsigned long data)
+{
+    u32 ctrl;
+    struct cpts_pin *pin = (struct cpts_pin*)data;
+
+    mod_timer(&pin->extts_state.timer, jiffies + msecs_to_jiffies(1000));
+
+    //ctrl = __omap_dm_timer_read(pin->timer, OMAP_TIMER_CAPTURE_REG, pin->timer->posted);
+    //ctrl = omap_dm_timer_read_status(pin->timer);
+    ctrl = readl_relaxed(pin->timer->irq_ena);
+
+    pr_info("cpts: %s counter val %u, tasklet state %lu, tasklet count %d\n", pin->ptp_pin->name, omap_dm_timer_read_counter(pin->timer), pin->capture_tasklet.state, pin->capture_tasklet.count.counter);
+}
+
 static int cpts_start_external_timestamp(struct ptp_extts_request *req, struct cpts_pin *pin)
 {
     u32 ctrl, mask = OMAP_TIMER_CTRL_TCM_BOTHEDGES;
@@ -263,7 +277,9 @@ static int cpts_start_external_timestamp(struct ptp_extts_request *req, struct c
     // enable the capture interrupt and start the timer
     omap_dm_timer_set_int_enable(pin->timer, OMAP_TIMER_INT_CAPTURE | OMAP_TIMER_INT_OVERFLOW);
     omap_dm_timer_start(pin->timer);
-    omap_dm_timer_trigger(pin->timer);
+
+    setup_timer(&pin->extts_state.timer, cpts_print_timer_value, (unsigned long)pin);
+    mod_timer(&pin->extts_state.timer, jiffies + msecs_to_jiffies(1000));
 
     return 0;
 }
@@ -492,6 +508,8 @@ static int cpts_disable_pin(struct cpts_pin *pin)
     omap_dm_timer_stop(pin->timer);
     omap_dm_timer_free(pin->timer);
     pin->timer = NULL;
+
+    del_timer(&pin->extts_state.timer);
 
     switch (pin->ptp_pin->index) {
     case 0: mask = HW1_TS_PUSH_EN; break;
