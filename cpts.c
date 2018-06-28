@@ -236,11 +236,16 @@ static int cpts_ptp_verify(struct ptp_clock_info *ptp, unsigned int pin,
 
 static void cpts_print_timer_value(unsigned long data)
 {
+    u32 ctrl;
     struct cpts_pin *pin = (struct cpts_pin*)data;
 
     mod_timer(&pin->extts_state.timer, jiffies + msecs_to_jiffies(1000));
 
-    pr_info("cpts: counter val %lu\n", omap_dm_timer_read_counter(pin->timer));
+    //ctrl = __omap_dm_timer_read(pin->timer, OMAP_TIMER_CAPTURE_REG, pin->timer->posted);
+    //ctrl = omap_dm_timer_read_status(pin->timer);
+    ctrl = readl_relaxed(pin->timer->irq_ena);
+
+    pr_info("cpts: %s counter val %u, tasklet state %lu, tasklet count %d\n", pin->ptp_pin->name, omap_dm_timer_read_counter(pin->timer), pin->capture_tasklet.state, pin->capture_tasklet.count.counter);
 }
 
 static int cpts_start_external_timestamp(struct ptp_extts_request *req, struct cpts_pin *pin)
