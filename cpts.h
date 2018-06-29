@@ -115,6 +115,7 @@ struct cpts_event {
 
 struct cpts_extts_state {
     volatile u32 capture;
+    bool new_capture;
     u32 last_capture;
     bool last_capture_valid;
     u32 period;
@@ -125,7 +126,13 @@ struct cpts_extts_state {
 };
 
 struct cpts_perout_state {
+    u64 capture;
+    bool capture_valid;
+    u64 last_capture;
+    bool last_capture_valid;
     u32 period;
+    unsigned long index;
+    u32 load[CPTS_AVERAGE_LEN];
 };
 
 struct cpts_pin {

@@ -93,7 +93,15 @@ static int cpts_fifo_read(struct cpts *cpts, int match)
 			pevent.timestamp = timecounter_cyc2time(&cpts->tc, event->low);
 			pevent.type = PTP_CLOCK_EXTTS;
 			pevent.index = event_port(event) - 1;
-			ptp_clock_event(cpts->clock, &pevent);
+            if(cpts->pins[pevent.index].state.type == PTP_CLK_REQ_PEROUT)
+            {
+                cpts->pins[pevent.index].capture = pevent.timestamp;
+                cpts->pins[pevent.index].new_capture = true;
+            }
+            else
+            {
+			    ptp_clock_event(cpts->clock, &pevent);
+            }
 			break;
 		case CPTS_EV_PUSH:
 		case CPTS_EV_RX:
@@ -296,10 +304,8 @@ static int cpts_start_periodic_output(struct ptp_perout_request *req, struct cpt
     memset(&pin->perout_state, 0, sizeof(pin->perout_state));
 
     omap_dm_timer_enable(pin->timer);
-    omap_dm_timer_set_prescaler(pin->timer, AM335X_NO_PRESCALER);
 
-    ctrl = __omap_dm_timer_read(pin->timer, OMAP_TIMER_CTRL_REG, pin->timer->posted);
-    ctrl |= OMAP_TIMER_CTRL_GPOCFG | OMAP_TIMER_CTRL_PT | 2 << 10;
+    ctrl = OMAP_TIMER_CTRL_GPOCFG | OMAP_TIMER_CTRL_PT | 2 << 10;
 	__omap_dm_timer_write(pin->timer, OMAP_TIMER_CTRL_REG, ctrl, pin->timer->posted);
     pin->timer->context.tclr = ctrl;
 
@@ -365,16 +371,16 @@ static void cpts_pin_capture_bottom_end(struct work_struct *work)
     unsigned long index, indexm1, indexp1;
     struct cpts_pin *pin = container_of(work, struct cpts_pin, capture_work);
 
-    // setup the indexes for using state arrays
-    index = pin->extts_state.index;
-    indexm1 = (index - 1) & (CPTS_AVERAGE_LEN - 1);
-    indexp1 = (index + 1) & (CPTS_AVERAGE_LEN - 1);
-
     pr_info("cpts: capture hit");
 
     switch(pin->state.type)
     {
     case PTP_CLK_REQ_EXTTS:
+        // setup the indexes for using state arrays
+        index = pin->extts_state.index;
+        indexm1 = (index - 1) & (CPTS_AVERAGE_LEN - 1);
+        indexp1 = (index + 1) & (CPTS_AVERAGE_LEN - 1);
+
         if (pin->extts_state.last_capture_valid && pin->extts_state.period == 0)
         { // ready to make an initial period calculation
             pin->extts_state.period = pin->extts_state.capture - pin->extts_state.last_capture;
@@ -452,7 +458,12 @@ static void cpts_pin_overflow_bottom_end(struct work_struct *work)
 {
     u32 ctrl;
     s32 avg;
+    unsigned long index, indexm1, indexp1;
     struct cpts_pin *pin = container_of(work, struct cpts_pin, overflow_work);
+    struct cpts *cpts = container_of(pin, struct cpts, pins[pin->ptp_pin->index]);
+
+    // read out all HW events (could be multiple)
+    while(cpts_fifo_read(cpts, CPTS_EV_HW) == 0);
 
     pr_info("cpts: overflow hit");
 
@@ -463,13 +474,14 @@ static void cpts_pin_overflow_bottom_end(struct work_struct *work)
         {
             __omap_dm_timer_write(pin->timer, OMAP_TIMER_LOAD_REG, pin->extts_state.load[pin->extts_state.index], pin->timer->posted);
             pin->timer->context.tldr = pin->extts_state.load[pin->extts_state.index];
+            
+            ctrl = __omap_dm_timer_read(pin->timer, OMAP_TIMER_CTRL_REG, pin->timer->posted);
 
             avg = cpts_extts_deficit_avg(pin);
             pr_info("cpts: overflow deficit avg %d", avg);
-            if(avg < 10)
+            if(avg < 10 && !(ctrl & OMAP_TIMER_CTRL_CE))
             { // clock is close enough, turn on output.
-		pr_info("cpts: started timer output, avg %d", avg);
-                ctrl = __omap_dm_timer_read(pin->timer, OMAP_TIMER_CTRL_REG, pin->timer->posted);
+                pr_info("cpts: started timer output, avg %d", avg);
                 ctrl |= OMAP_TIMER_CTRL_CE;
                 __omap_dm_timer_write(pin->timer, OMAP_TIMER_CTRL_REG, ctrl, pin->timer->posted);
                 pin->timer->context.tclr = ctrl;
@@ -477,6 +489,20 @@ static void cpts_pin_overflow_bottom_end(struct work_struct *work)
         }
         break;
     case PTP_CLK_REQ_PEROUT:
+        if(pin->perout_state.new_capture)
+        {
+            index = pin->perout_state.index;
+            indexm1 = (index - 1) & (CPTS_AVERAGE_LEN - 1);
+            indexp1 = (index + 1) & (CPTS_AVERAGE_LEN - 1);
+
+            if(pin->perout_state.last_capture_valid)
+            {
+                pin->perout_state.period = (u32)div_64((u64)(0lu - pin->perout_state.load[indexm1]) * 1000000000,
+                        pin->perout_state.capture - pin->perout_state.last_capture);
+            }
+
+            
+        }
     default:
         break;
     }
