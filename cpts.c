@@ -353,7 +353,7 @@ static s32 cpts_extts_deficit_avg(struct cpts_pin *pin)
     s64 sum = 0;
 
     for(i = 0; i < CPTS_AVERAGE_LEN; ++i)
-        sum += pin->extts_state.deficit[i];
+        sum += pin->extts_state.deficit[i] >= 0 ? pin->extts_state.deficit[i] : -pin->extts_state.deficit[i];
 
     return (s32)div_s64(sum, CPTS_AVERAGE_LEN);
 }
@@ -366,7 +366,7 @@ static void cpts_pin_capture_bottom_end(struct work_struct *work)
     struct cpts_pin *pin = container_of(work, struct cpts_pin, capture_work);
 
     // setup the indexes for using state arrays
-    index = pin->extts_state.pd_index;
+    index = pin->extts_state.index;
     indexm1 = (index - 1) & (CPTS_AVERAGE_LEN - 1);
     indexp1 = (index + 1) & (CPTS_AVERAGE_LEN - 1);
 
@@ -391,6 +391,9 @@ static void cpts_pin_capture_bottom_end(struct work_struct *work)
             // initialize all the load values
             for(i = 1; i < CPTS_AVERAGE_LEN; ++i)
                 pin->extts_state.load[i] = pin->extts_state.load[0];
+            // initialize deficits to a large number so we don't falsely start the output
+            for(i = 0; i < CPTS_AVERAGE_LEN; ++i)
+                pin->extts_state.deficit[i] = pin->extts_state.load[i];
 
             // we triggered so we can't use the capture for period calculation
             pin->extts_state.last_capture_valid = false;
@@ -415,6 +418,12 @@ static void cpts_pin_capture_bottom_end(struct work_struct *work)
                 // do a weighted average of the previous period
                 pin->extts_state.period = (u64)div_u64((u64)pin->extts_state.period * 3 + (u64)period, 4);
             }
+            else
+            {
+                // reset all the deficits
+                for(i = 0; i < CPTS_AVERAGE_LEN; ++i)
+                    pin->extts_state.deficit[i] = pin->extts_state.deficit[index];
+            }
 
             // Ri+1 = T - (2 * P - (T - Ri) + (Di)
             pin->extts_state.load[indexp1] = 0ul - (u32)(2 * pin->extts_state.period -
@@ -427,7 +436,7 @@ static void cpts_pin_capture_bottom_end(struct work_struct *work)
                         pin->timer->posted);
                 pin->timer->context.tldr = pin->extts_state.load[indexp1];
             }
-            pr_info("cpts: capture %s avg %d, load value %u", pin->ptp_pin->name, avg, pin->extts_state.load[indexp1]);
+            pr_info("cpts: capture %s load value %u", pin->ptp_pin->name, pin->extts_state.load[indexp1]);
             pin->extts_state.index = indexp1;
         }
         pin->extts_state.last_capture = pin->extts_state.capture;
@@ -452,11 +461,12 @@ static void cpts_pin_overflow_bottom_end(struct work_struct *work)
     case PTP_CLK_REQ_EXTTS:
         if(pin->extts_state.period != 0)
         {
-            __omap_dm_timer_write(pin->timer, OMAP_TIMER_LOAD_REG, pin->extts_state.load[index], pin->timer->posted);
-            pin->timer->context.tldr = pin->extts_state.load[index];
+            __omap_dm_timer_write(pin->timer, OMAP_TIMER_LOAD_REG, pin->extts_state.load[pin->extts_state.index], pin->timer->posted);
+            pin->timer->context.tldr = pin->extts_state.load[pin->extts_state.index];
 
             avg = cpts_extts_deficit_avg(pin);
-            if(avg <= 2 && avg >= -2)
+            pr_info("cpts: overflow deficit avg %d", avg);
+            if(avg < 10)
             { // clock is close enough, turn on output.
 		pr_info("cpts: started timer output, avg %d", avg);
                 ctrl = __omap_dm_timer_read(pin->timer, OMAP_TIMER_CTRL_REG, pin->timer->posted);
