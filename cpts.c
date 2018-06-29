@@ -325,15 +325,16 @@ static irqreturn_t cpts_timer_interrupt(int irq, void *data)
     switch(pin->state.type)
     {
     case PTP_CLK_REQ_EXTTS:
+        // overflow first so we don't overwrite the load value
+        if(irq_status & OMAP_TIMER_INT_OVERFLOW)
+        {
+            schedule_work(&pin->overflow_work);
+        }
         if(irq_status & OMAP_TIMER_INT_CAPTURE)
         {
             pin->extts_state.capture = __omap_dm_timer_read(pin->timer,
                     OMAP_TIMER_CAPTURE_REG, pin->timer->posted);
             schedule_work(&pin->capture_work);
-        }
-        if(irq_status & OMAP_TIMER_INT_OVERFLOW)
-        {
-            schedule_work(&pin->overflow_work);
         }
         break;
     case PTP_CLK_REQ_PEROUT:
@@ -359,8 +360,15 @@ static s32 cpts_extts_deficit_avg(struct cpts_pin *pin)
 
 static void cpts_pin_capture_bottom_end(struct work_struct *work)
 {
-    s32 avg;
+    int i;
+    u32 period;
+    unsigned long index, indexm1, indexp1;
     struct cpts_pin *pin = container_of(work, struct cpts_pin, capture_work);
+
+    // setup the indexes for using state arrays
+    index = pin->extts_state.pd_index;
+    indexm1 = (index - 1) & (CPTS_AVERAGE_LEN - 1);
+    indexp1 = (index + 1) & (CPTS_AVERAGE_LEN - 1);
 
     pr_info("cpts: capture hit");
 
@@ -370,42 +378,57 @@ static void cpts_pin_capture_bottom_end(struct work_struct *work)
         if (pin->extts_state.last_capture_valid && pin->extts_state.period == 0)
         { // ready to make an initial period calculation
             pin->extts_state.period = pin->extts_state.capture - pin->extts_state.last_capture;
-            pin->extts_state.load = 0ul - pin->extts_state.period;
-            pr_info("cpts capture found pulse, %u %u", pin->extts_state.period, pin->extts_state.load);
+            pin->extts_state.load[0] = 0ul - pin->extts_state.period;
 
             // write load and load it.
-            __omap_dm_timer_write(pin->timer, OMAP_TIMER_LOAD_REG, pin->extts_state.load, pin->timer->posted);
+            __omap_dm_timer_write(pin->timer, OMAP_TIMER_LOAD_REG, pin->extts_state.load[0], pin->timer->posted);
             // trigger so counter is after load value, let future interrupts fix the error
             omap_dm_timer_trigger(pin->timer);
+            pin->timer->context.tldr = pin->extts_state.load[0];
 
-            pin->timer->context.tldr = pin->extts_state.load;
+            pr_info("cpts capture found pulse, %u %u", pin->extts_state.period, pin->extts_state.load[0]);
+
+            // initialize all the load values
+            for(i = 1; i < CPTS_AVERAGE_LEN; ++i)
+                pin->extts_state.load[i] = pin->extts_state.load[0];
+
+            // we triggered so we can't use the capture for period calculation
             pin->extts_state.last_capture_valid = false;
             break;
         }
         else if(pin->extts_state.period != 0)
         { // initial period is calculated, need to fix the load value to match the period
+            // calculate the deficit
+            pin->extts_state.deficit[index] =
+                pin->extts_state.capture > (0ul - pin->extts_state.period / 2) ?
+                -(s32)(0ul - pin->extts_state.capture) :
+                (s32)(pin->extts_state.capture - pin->extts_state.load[index]);
+
             // @todo, detect period error
+            // calculate the period if the last capture is valid
+            if(pin->extts_state.last_capture_valid)
+            {
+                // period = T - Ri-1 + Di - Di-1
+                period = 0ul - pin->extts_state.load[indexm1] + pin->extts_state.deficit[index] -
+                    pin->extts_state.deficit[indexm1];
 
-            if(pin->extts_state.capture > (0ul - pin->extts_state.period / 2))
-            { // output is ahead of input.
-                pin->extts_state.deficit[pin->extts_state.pd_index] = -(s32)(0ul - pin->extts_state.capture);
-                avg = pin->extts_state.deficit[pin->extts_state.pd_index] / 4;
-                pin->extts_state.load -= avg;
-                // let the overflow bottom end take care of setting the timer
+                // do a weighted average of the previous period
+                pin->extts_state.period = (u64)div_u64((u64)pin->extts_state.period * 3 + (u64)period, 4);
             }
-            else
-            { // input is ahead of output
-                pin->extts_state.deficit[pin->extts_state.pd_index] = 
-                    (s32)(pin->extts_state.capture - pin->extts_state.load);
-                avg = pin->extts_state.deficit[pin->extts_state.pd_index] / 4;
-                pin->extts_state.load -= avg;
 
+            // Ri+1 = T - (2 * P - (T - Ri) + (Di)
+            pin->extts_state.load[indexp1] = 0ul - (u32)(2 * pin->extts_state.period -
+                    (0ul - pin->extts_state.load[index]) + pin->extts_state.deficit[index]);
+
+            if(pin->extts_state.deficit[index] >= 0)
+            {
                 // we're just past the overflow so setup the next load
-                __omap_dm_timer_write(pin->timer, OMAP_TIMER_LOAD_REG, pin->extts_state.load, pin->timer->posted);
-                pin->timer->context.tldr = pin->extts_state.load;
+                __omap_dm_timer_write(pin->timer, OMAP_TIMER_LOAD_REG, pin->extts_state.load[indexp1],
+                        pin->timer->posted);
+                pin->timer->context.tldr = pin->extts_state.load[indexp1];
             }
-            pr_info("cpts: capture %s avg %d, load value %u", pin->ptp_pin->name, avg, pin->extts_state.load);
-            pin->extts_state.pd_index = (pin->extts_state.pd_index + 1) & (CPTS_AVERAGE_LEN - 1);
+            pr_info("cpts: capture %s avg %d, load value %u", pin->ptp_pin->name, avg, pin->extts_state.load[indexp1]);
+            pin->extts_state.index = indexp1;
         }
         pin->extts_state.last_capture = pin->extts_state.capture;
         pin->extts_state.last_capture_valid = true;
@@ -429,8 +452,8 @@ static void cpts_pin_overflow_bottom_end(struct work_struct *work)
     case PTP_CLK_REQ_EXTTS:
         if(pin->extts_state.period != 0)
         {
-            __omap_dm_timer_write(pin->timer, OMAP_TIMER_LOAD_REG, pin->extts_state.load, pin->timer->posted);
-            pin->timer->context.tldr = pin->extts_state.load;
+            __omap_dm_timer_write(pin->timer, OMAP_TIMER_LOAD_REG, pin->extts_state.load[index], pin->timer->posted);
+            pin->timer->context.tldr = pin->extts_state.load[index];
 
             avg = cpts_extts_deficit_avg(pin);
             if(avg <= 2 && avg >= -2)

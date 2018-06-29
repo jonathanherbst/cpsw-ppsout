@@ -104,7 +104,7 @@ enum {
 #define CPTS_FIFO_DEPTH 16
 #define CPTS_MAX_EVENTS 32
 #define CPTS_NUM_PINS 4
-#define CPTS_AVERAGE_LEN 8  // needs to be power of 2
+#define CPTS_AVERAGE_LEN 4  // needs to be power of 2
 
 struct cpts_event {
 	struct list_head list;
@@ -118,8 +118,8 @@ struct cpts_extts_state {
     u32 last_capture;
     bool last_capture_valid;
     u32 period;
-    u32 load;
-    unsigned long pd_index;
+    unsigned long index;
+    u32 load[CPTS_AVERAGE_LEN];
     s32 deficit[CPTS_AVERAGE_LEN];
     struct timer_list timer;
 };
