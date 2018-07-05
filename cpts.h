@@ -133,6 +133,8 @@ struct cpts_perout_state {
     u32 period;
     unsigned long index;
     u32 load[CPTS_AVERAGE_LEN];
+    s32 deficit[CPTS_AVERAGE_LEN];
+    bool deficit_valid;
 };
 
 struct cpts_pin {
