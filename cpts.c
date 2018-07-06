@@ -2,6 +2,7 @@
  * TI Common Platform Time Sync
  *
  * Copyright (C) 2012 Richard Cochran <richardcochran@gmail.com>
+ * Copyright (C) 2018 Jonathan Herbst <jonathan_herbst@lord.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -28,7 +29,6 @@
 #include <linux/workqueue.h>
 #include <linux/if_ether.h>
 #include <linux/if_vlan.h>
-#include <linux/math64.h>
 
 #include "cpts.h"
 
@@ -222,323 +222,16 @@ static int cpts_ptp_settime(struct ptp_clock_info *ptp,
 static int cpts_ptp_verify(struct ptp_clock_info *ptp, unsigned int pin,
                            enum ptp_pin_function func, unsigned int chan)
 {
-	/* Check number of pins */
-	if (pin >= ptp->n_pins || !ptp->pin_config)
-		return -EINVAL;
-
-	/* Lock the channel */
-	if (chan != ptp->pin_config[pin].chan)
-		return -EINVAL;
-
-	/* Check function */
-	switch (func) {
-		case PTP_PF_NONE:
-		case PTP_PF_EXTTS:
-        	break;
-    	default:
-		return -EINVAL;
-	}
-
-	return 0;
-}
-
-static void cpts_print_timer_value(unsigned long data)
-{
-    u32 ctrl;
-    struct cpts_pin *pin = (struct cpts_pin*)data;
-
-    mod_timer(&pin->extts_state.timer, jiffies + msecs_to_jiffies(1000));
-
-    //ctrl = __omap_dm_timer_read(pin->timer, OMAP_TIMER_CAPTURE_REG, pin->timer->posted);
-    //ctrl = omap_dm_timer_read_status(pin->timer);
-    ctrl = readl_relaxed(pin->timer->irq_ena);
-
-    pr_info("cpts: %s counter val %u\n", pin->ptp_pin->name, omap_dm_timer_read_counter(pin->timer));
-}
-
-static int cpts_start_external_timestamp(struct ptp_extts_request *req, struct cpts_pin *pin)
-{
-    u32 ctrl, mask = OMAP_TIMER_CTRL_TCM_BOTHEDGES;
-    u32 edge = req->flags;
-
-    memset(&pin->extts_state, 0, sizeof(pin->extts_state));
-
-    omap_dm_timer_enable(pin->timer);
-
-    // set timer pin to input and setup edge to capture
-	if ((edge & PTP_RISING_EDGE) && (edge & PTP_FALLING_EDGE))
-		mask = OMAP_TIMER_CTRL_TCM_BOTHEDGES;
-	else if (edge & PTP_FALLING_EDGE)
-		mask = OMAP_TIMER_CTRL_TCM_HIGHTOLOW;
-	else if (edge & PTP_RISING_EDGE)
-		mask = OMAP_TIMER_CTRL_TCM_LOWTOHIGH;
-	ctrl = mask | OMAP_TIMER_CTRL_GPOCFG | 1 << 10;
-	__omap_dm_timer_write(pin->timer, OMAP_TIMER_CTRL_REG, ctrl, pin->timer->posted);
-    pin->timer->context.tclr = ctrl;
-    omap_dm_timer_disable(pin->timer);
-
-    pr_info("cpts: start extts timer ctrl %d\n", ctrl);
-
-    // autoload to zero
-    omap_dm_timer_set_load(pin->timer, 1, 0);
-
-    // enable the capture interrupt and start the timer
-    __omap_dm_timer_write_status(pin->timer, OMAP_TIMER_INT_CAPTURE);
-    omap_dm_timer_set_int_enable(pin->timer, OMAP_TIMER_INT_CAPTURE | OMAP_TIMER_INT_OVERFLOW);
-    omap_dm_timer_start(pin->timer);
-
-    setup_timer(&pin->extts_state.timer, cpts_print_timer_value, (unsigned long)pin);
-    mod_timer(&pin->extts_state.timer, jiffies + msecs_to_jiffies(1000));
-
-    return 0;
-}
-
-static int cpts_start_periodic_output(struct ptp_perout_request *req, struct cpts_pin *pin)
-{
-    u32 ctrl;
-    u32 load;
-    u64 time_now;
-    u32 cycles;
-    struct cpts *cpts = container_of(pin, struct cpts, pins[pin->ptp_pin->index]);
-
-    memset(&pin->perout_state, 0, sizeof(pin->perout_state));
-
-    omap_dm_timer_enable(pin->timer);
-
-    ctrl = OMAP_TIMER_CTRL_GPOCFG | OMAP_TIMER_CTRL_PT | 2 << 10;
-	__omap_dm_timer_write(pin->timer, OMAP_TIMER_CTRL_REG, ctrl, pin->timer->posted);
-    pin->timer->context.tclr = ctrl;
-
-    // setup autoload so we overflow once per second.
-    load = 0ul - pin->timer->rate;
-    omap_dm_timer_set_load(pin->timer, 1, load);
-
-    // setup an estimation of the time, the interrupt will get it more accurate before we enable the output.
-    div64_u64_rem(timecounter_read(&cpts->tc), 1000000000, &time_now);
-    cycles = (u32)div_u64(time_now * pin->timer->rate, 1000000000);
-	__omap_dm_timer_write(pin->timer, OMAP_TIMER_COUNTER_REG, load + cycles, pin->timer->posted);
-
-    omap_dm_timer_start(pin->timer);
-
-    return 0;
-}
-
-static irqreturn_t cpts_timer_interrupt(int irq, void *data)
-{
-    struct cpts_pin *pin = data;
-
-    u32 irq_status = omap_dm_timer_read_status(pin->timer);
-    switch(pin->state.type)
-    {
-    case PTP_CLK_REQ_EXTTS:
-        // overflow first so we don't overwrite the load value
-        if(irq_status & OMAP_TIMER_INT_OVERFLOW)
-        {
-            schedule_work(&pin->overflow_work);
-        }
-        if(irq_status & OMAP_TIMER_INT_CAPTURE)
-        {
-            pin->extts_state.capture = __omap_dm_timer_read(pin->timer,
-                    OMAP_TIMER_CAPTURE_REG, pin->timer->posted);
-            schedule_work(&pin->capture_work);
-        }
-        break;
-    case PTP_CLK_REQ_PEROUT:
-    default:
-        break;
-    }
-    // clear interrupts
-    __omap_dm_timer_write_status(pin->timer, irq_status);
-
-    return IRQ_HANDLED;
-}
-
-static s32 cpts_extts_deficit_avg(struct cpts_pin *pin)
-{
-    int i;
-    s64 sum = 0;
-
-    for(i = 0; i < CPTS_AVERAGE_LEN; ++i)
-        sum += pin->extts_state.deficit[i] >= 0 ? pin->extts_state.deficit[i] : -pin->extts_state.deficit[i];
-
-    return (s32)div_s64(sum, CPTS_AVERAGE_LEN);
-}
-
-static struct cpts_pin * cpts_get_pin(struct cpts *cpts, unsigned int index)
-{
-    // resolve the pin
-    if (index >= CPTS_NUM_PINS)
-        return NULL;
-    return cpts->pins + index;
-}
-
-static int cpts_enable_pin(struct cpts_pin *pin)
-{
-	u32 ctrl, mask;
-    struct cpts *cpts = container_of(pin, struct cpts, pins[pin->ptp_pin->index]);
-
-    // request the timer for the pin
-    if(!pin->timer)
-        pin->timer = omap_dm_timer_request_by_node(pin->timerNode);
-    if(!pin->timer)
-        return -EINVAL;
-
-    //tasklet_enable(&pin->capture_tasklet);
-    //tasklet_enable(&pin->overflow_tasklet);
-    // request the timer interrupt
-    if (request_irq(omap_dm_timer_get_irq(pin->timer), cpts_timer_interrupt, IRQF_TIMER,
-                pin->ptp_pin->name, pin))
-        return -EIO;
-
-    // enable the pin in the cpts peripheral
-    switch (pin->ptp_pin->index) {
-    case 0: mask = HW1_TS_PUSH_EN; break;
-    case 1: mask = HW2_TS_PUSH_EN; break;
-    case 2: mask = HW3_TS_PUSH_EN; break;
-    case 3: mask = HW4_TS_PUSH_EN; break;
-    default: return -EINVAL;
-    }
-    ctrl = cpts_read32(cpts, control);
-    ctrl |= mask;
-    cpts_write32(cpts, ctrl, control);
-
-    // setup the timer clock source
-    omap_dm_timer_set_source(pin->timer, OMAP_TIMER_SRC_SYS_CLK);
-    pin->timer->rate = clk_get_rate(pin->timer->fclk);
-    pr_info("cpts: timer rate: %lu Hz", pin->timer->rate);
-    return 0;
-}
-
-static int cpts_disable_pin(struct cpts_pin *pin)
-{
-	u32 ctrl, mask;
-    struct cpts *cpts = container_of(pin, struct cpts, pins[pin->ptp_pin->index]);
-
-    // if ther is no timer then there is nothing to disable
-    if (!pin->timer)
-        return 0;
-
-    free_irq(omap_dm_timer_get_irq(pin->timer), pin);
-    //tasklet_disable(&pin->capture_tasklet);
-    //tasklet_disable(&pin->overflow_tasklet);
-    cancel_work_sync(&pin->capture_work);
-    cancel_work_sync(&pin->overflow_work);
-    omap_dm_timer_set_int_disable(pin->timer, OMAP_TIMER_INT_CAPTURE |
-            OMAP_TIMER_INT_OVERFLOW | OMAP_TIMER_INT_MATCH);
-    omap_dm_timer_enable(pin->timer);
-    omap_dm_timer_stop(pin->timer);
-    omap_dm_timer_free(pin->timer);
-    pin->timer = NULL;
-
-    del_timer(&pin->extts_state.timer);
-
-    switch (pin->ptp_pin->index) {
-    case 0: mask = HW1_TS_PUSH_EN; break;
-    case 1: mask = HW2_TS_PUSH_EN; break;
-    case 2: mask = HW3_TS_PUSH_EN; break;
-    case 3: mask = HW4_TS_PUSH_EN; break;
-    default: return -EINVAL;
-    }
-    ctrl = cpts_read32(cpts, control);
-    ctrl &= ~mask;
-    cpts_write32(cpts, ctrl, control);
-
-    return 0;
+	return cpts_pin_ptp_verify(ptp, pin, func, chan);
 }
 
 static int cpts_ptp_enable(struct ptp_clock_info *ptp,
 			   struct ptp_clock_request *rq, int on)
 {
-	int err = 0;
-    struct cpts_pin *pin;
-	struct cpts *cpts = container_of(ptp, struct cpts, info);
-        pr_info("cpts: ptp_enable %d\n", rq->type);
-
-	switch(rq->type) {
-	case PTP_CLK_REQ_EXTTS:
-        pr_info("cpts: request to setup extts on pin %d\n", rq->extts.index);
-        pin = cpts_get_pin(cpts, rq->extts.index);
-        if(!pin)
-        {
-            pr_warn("cpts: unable to get pin %d\n", rq->extts.index);
-            return -EINVAL;
-        }
-
-        pr_info("cpts: check pin on %d\n", on);
-        if (on)
-        {
-            pr_info("cpts: enable pin\n");
-            err = cpts_enable_pin(pin);
-            if (!err)
-            {
-            	pr_info("cpts: start pin\n");
-                err = cpts_start_external_timestamp(&rq->extts, pin);
-                if (!err)
-                {
-                    pr_info("cpts: start success %d\n", rq->extts.index);
-                    pin->state = *rq;
-                    return 0;
-                }
-                pr_warn("cpts: start failed %d\n", err);
-            }
-            pr_warn("cpts: enable failed %d\n", err);
-        }
-
-        cpts_disable_pin(pin);
-        return err;
-    case PTP_CLK_REQ_PEROUT:
-        pin = cpts_get_pin(cpts, rq->perout.index);
-        if(!pin)
-            return -EINVAL;
-
-        if (on)
-        {
-            err = cpts_enable_pin(pin);
-            if (!err)
-            {
-                err = cpts_start_periodic_output(&rq->perout, pin);
-                if (!err)
-                {
-                    pin->state = *rq;
-                    return 0;
-                }
-            }
-        }
-
-        cpts_disable_pin(pin);
-        return err;
-	default:
-		break;
-	}
-	return -EOPNOTSUPP;
+	return cpts_pin_ptp_enable(ptp, rq, on);
 }
 
-static struct ptp_pin_desc cpts_pins[CPTS_NUM_PINS] = {
-	{
-		.name = "timer4",
-		.index = 0,
-		.func = PTP_PF_NONE,
-		.chan = 0
-	},
-	{
-		.name = "timer5",
-		.index = 1,
-		.func = PTP_PF_NONE,
-		.chan = 1
-	},
-	{
-		.name = "timer6",
-		.index = 2,
-		.func = PTP_PF_NONE,
-		.chan = 2
-	},
-	{
-		.name = "timer7",
-		.index = 3,
-		.func = PTP_PF_NONE,
-		.chan = 3
-	}
-};
+
 
 static struct ptp_clock_info cpts_info = {
 	.owner		= THIS_MODULE,
@@ -722,28 +415,7 @@ int cpts_register(struct device *dev, struct cpts *cpts,
 	for (i = 0; i < CPTS_MAX_EVENTS; i++)
 		list_add(&cpts->pool_data[i].list, &cpts->pool);
 
-    for (i = 0; i < CPTS_NUM_PINS; i++)
-    {
-        cpts->pins[i].ptp_pin = cpts->info.pin_config + i;
-        cpts->pins[i].timerNode = of_find_node_by_name(NULL, "timer");
-        while(cpts->pins[i].timerNode)
-        {
-            if(of_property_read_string(cpts->pins[i].timerNode, "ti,hwmods", &prop_name) == 0 &&
-                    strcmp(prop_name, cpts->pins[i].ptp_pin->name) == 0)
-                break;
-            cpts->pins[i].timerNode = of_find_node_by_name(cpts->pins[i].timerNode, "timer");
-        }
-
-        if (!cpts->pins[i].timerNode)
-            pr_warn("cpts: unable to find %s in device tree", cpts->pins[i].ptp_pin->name);
-        cpts->pins[i].timer = NULL;
-        //tasklet_init(&cpts->pins[i].capture_tasklet, cpts_pin_capture_bottom_end,
-        //        (unsigned long)(cpts->pins + i));
-        //tasklet_init(&cpts->pins[i].overflow_tasklet, cpts_pin_overflow_bottom_end,
-        //        (unsigned long)(cpts->pins + i));
-        INIT_WORK(&cpts->pins[i].capture_work, cpts_pin_capture_bottom_end);
-        INIT_WORK(&cpts->pins[i].overflow_work, cpts_pin_overflow_bottom_end);
-    }
+  cpts_pin_register(cpts);
 
 	cpts_clk_init(dev, cpts);
 	cpts_write32(cpts, CPTS_EN, control);
@@ -764,14 +436,7 @@ int cpts_register(struct device *dev, struct cpts *cpts,
 void cpts_unregister(struct cpts *cpts)
 {
 #ifdef CONFIG_TI_CPTS
-    int i;
-
-    for (i = 0; i < CPTS_NUM_PINS; i++)
-    {
-        cpts_disable_pin(&cpts->pins[i]);
-        if(cpts->pins[i].timer) omap_dm_timer_free(cpts->pins[i].timer);
-        if(cpts->pins[i].timerNode) of_node_put(cpts->pins[i].timerNode);
-    }
+    cpts_pin_unregister(cpts);
 
 	if (cpts->clock) {
 		ptp_clock_unregister(cpts->clock);

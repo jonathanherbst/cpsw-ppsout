@@ -2,6 +2,7 @@
  * TI Common Platform Time Sync
  *
  * Copyright (C) 2012 Richard Cochran <richardcochran@gmail.com>
+ * Copyright (C) 2018 Jonathan Herbst <jonathan_herbst@lord.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -29,9 +30,11 @@
 #include <linux/skbuff.h>
 #include <linux/timecounter.h>
 #include <linux/interrupt.h>
-#include <linux/timer.h>
 
-#include <arch/arm/plat-omap/include/plat/dmtimer.h>
+#ifdef CONFIG_TI_CPTS
+#include "cpts_pin.h"
+#endif
+
 
 struct cpsw_cpts {
 	u32 idver;                /* Identification and version */
@@ -103,53 +106,12 @@ enum {
 
 #define CPTS_FIFO_DEPTH 16
 #define CPTS_MAX_EVENTS 32
-#define CPTS_NUM_PINS 4
-#define CPTS_AVERAGE_LEN 4  // needs to be power of 2
 
 struct cpts_event {
 	struct list_head list;
 	unsigned long tmo;
 	u32 high;
 	u32 low;
-};
-
-struct cpts_extts_state {
-    volatile u32 capture;
-    bool new_capture;
-    u32 last_capture;
-    bool last_capture_valid;
-    u32 period;
-    unsigned long index;
-    u32 load[CPTS_AVERAGE_LEN];
-    s32 deficit[CPTS_AVERAGE_LEN];
-    struct timer_list timer;
-};
-
-struct cpts_perout_state {
-    u64 capture;
-    bool capture_valid;
-    u64 last_capture;
-    bool last_capture_valid;
-    u32 period;
-    unsigned long index;
-    u32 load[CPTS_AVERAGE_LEN];
-    s32 deficit[CPTS_AVERAGE_LEN];
-    bool deficit_valid;
-};
-
-struct cpts_pin {
-    struct device_node *timerNode;
-    struct omap_dm_timer *timer;
-    struct ptp_pin_desc *ptp_pin;
-    struct ptp_clock_request state;
-    //struct tasklet_struct capture_tasklet;
-    //struct tasklet_struct overflow_tasklet;
-    struct work_struct capture_work;
-    struct work_struct overflow_work;
-    union {
-        struct cpts_extts_state extts_state;
-        struct cpts_perout_state perout_state;
-    };
 };
 
 struct cpts {
@@ -169,7 +131,7 @@ struct cpts {
 	struct list_head events;
 	struct list_head pool;
 	struct cpts_event pool_data[CPTS_MAX_EVENTS];
-    struct cpts_pin pins[CPTS_NUM_PINS];
+	struct cpts_pin pins[CPTS_NUM_PINS];
 #endif
 };
 
