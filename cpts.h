@@ -136,9 +136,17 @@ struct cpts {
 };
 
 #ifdef CONFIG_TI_CPTS
+int cpts_fifo_read(struct cpts *cpts, int match);
+int cpts_set_hardware_push(struct cpts *cpts, unsigned long index, bool on);
 void cpts_rx_timestamp(struct cpts *cpts, struct sk_buff *skb);
 void cpts_tx_timestamp(struct cpts *cpts, struct sk_buff *skb);
 #else
+static inline int cpts_fifo_read(struct cpts *cpts, int match)
+{
+}
+static inline int cpts_set_hardware_push(struct cpts *cpts, unsigned long index, bool on)
+{
+}
 static inline void cpts_rx_timestamp(struct cpts *cpts, struct sk_buff *skb)
 {
 }

@@ -58,18 +58,17 @@ inline unsigned long cpts_pin_index(unsigned long index)
 
 inline u32 cpts_pin_ns_to_cycles(struct cpts_pin* pin, u32 period, u64 ns)
 {
-	return (u32)div_u64(ns * period, 1000000000);
+	return (u32)div64_u64(ns * period, 1000000000);
 }
 
 inline u32 cpts_pin_weighted_avg(u32 a, u32 a_weight, u32 b, u32 b_weight)
 {
-  return (u32)div_u64((u64)a * a_weight + (u64)b * b_weight,
+  return (u32)div64_u64((u64)a * a_weight + (u64)b * b_weight,
 		 a_weight + b_weight);
 }
 
 static void cpts_pin_set_array(void* a, void* v, int v_size, int l)
 {
-	int i;
 	u8* ptr = a;
 	for(; ptr < (u8*)a + v_size * l; ++ptr)
 	  memcpy(a, v, v_size);
@@ -104,7 +103,8 @@ static u32 cpts_pin_extts_calculate_reload(struct cpts_pin *pin)
 
 static void cpts_pin_extts_set_reload(struct cpts_pin *pin)
 {
-	unsigned long indexm1;
+	u32 period;
+	unsigned long indexp1;
 	unsigned long index = pin->perout_state.index;
 	indexp1 = cpts_pin_index(index + 1);
 
@@ -113,7 +113,7 @@ static void cpts_pin_extts_set_reload(struct cpts_pin *pin)
 	if (pin->extts_state.last_capture_valid) {
 		period = cpts_pin_extts_calculate_period(pin);
 		pin->extts_state.period = cpts_pin_weighted_avg(
-				in->extts_state.period, 3, period, 1);
+				pin->extts_state.period, 3, period, 1);
 	}
 	else {
 		cpts_pin_set_array(pin->extts_state.deficit,
@@ -137,7 +137,7 @@ static void cpts_pin_extts_set_reload(struct cpts_pin *pin)
 static u32 cpts_pin_perout_calculate_period(struct cpts_pin *pin)
 {
 	unsigned long indexm1 = cpts_pin_index(pin->perout_state.index - 1);
-	return (u32)div_64((u64)(0lu - pin->perout_state.load[indexm1]) *
+	return (u32)div64_u64((u64)(0lu - pin->perout_state.load[indexm1]) *
 			1000000000, pin->perout_state.capture -
 			pin->perout_state.last_capture);
 }
@@ -166,12 +166,12 @@ static s32 cpts_pin_deficit_avg(const s32 *deficit)
 	for (i = 0; i < CPTS_AVERAGE_LEN; ++i)
 		sum += deficit[i] >= 0 ? deficit[i] : -deficit[i];
 
-	return (s32)div_s64(sum, CPTS_AVERAGE_LEN);
+	return (s32)div64_s64(sum, CPTS_AVERAGE_LEN);
 }
 
 static u64 cpts_pin_est_ns(struct cpts_pin* pin, u32 cycles)
 {
-	return div_u64((u64)cycles * 1000000000, pin->timer->rate);
+	return div64_u64((u64)cycles * 1000000000, pin->timer->rate);
 }
 
 static void cpts_pin_perout_set_reload(struct cpts_pin* pin)
@@ -189,12 +189,12 @@ static void cpts_pin_perout_set_reload(struct cpts_pin* pin)
 
 	pin->perout_state.deficit[index] =
 		cpts_pin_perout_calculate_deficit(pin);
-	if (!deficit_valid) {
+	if (!pin->perout_state.deficit_valid) {
 		cpts_pin_set_array(pin->perout_state.deficit,
 				&pin->perout_state.deficit[index],
 				sizeof(pin->perout_state.deficit[index]),
 				CPTS_AVERAGE_LEN);
-		deficit_valid = true;
+		pin->perout_state.deficit_valid = true;
 	}
 	pin->perout_state.load[indexp1] = cpts_pin_perout_calculate_reload(pin);
 
@@ -265,7 +265,6 @@ static void cpts_pin_overflow_bottom_half(struct work_struct *work)
 {
 	u32 ctrl;
 	s32 avg;
-	unsigned long index, indexm1, indexp1;
 	struct cpts_pin *pin = container_of(work, struct cpts_pin,
 			overflow_work);
 	struct cpts *cpts = container_of(pin, struct cpts,
@@ -293,7 +292,7 @@ static void cpts_pin_overflow_bottom_half(struct work_struct *work)
 			avg = cpts_pin_deficit_avg(pin->extts_state.deficit);
 			pr_info("cpts: overflow deficit avg %d", avg);
 			if (!(ctrl & OMAP_TIMER_CTRL_CE) &&
-					cpts_pin_est_ns(avg) < 500) {
+					cpts_pin_est_ns(pin, avg) < 500) {
 				pr_info("cpts: started timer output, avg %d",
 						avg);
 				ctrl |= OMAP_TIMER_CTRL_CE;
@@ -305,7 +304,7 @@ static void cpts_pin_overflow_bottom_half(struct work_struct *work)
 		}
 		break;
 	case PTP_CLK_REQ_PEROUT:
-		if (pin->perout_state.new_capture) {
+		if (pin->perout_state.capture_valid) {
 			if (pin->perout_state.last_capture_valid)
 				cpts_pin_perout_set_reload(pin);
 
@@ -319,7 +318,7 @@ static void cpts_pin_overflow_bottom_half(struct work_struct *work)
 			avg = cpts_pin_deficit_avg(pin->perout_state.deficit);
 			pr_info("cpts: perout overflow deficit avg %d", avg);
 			if (ctrl & OMAP_TIMER_CTRL_GPOCFG &&
-					cpts_pin_est_ns(avg) < 500) {
+					cpts_pin_est_ns(pin, avg) < 500) {
 				ctrl &= ~OMAP_TIMER_CTRL_GPOCFG;
 				__omap_dm_timer_write(pin->timer,
 					OMAP_TIMER_CTRL_REG, ctrl,
@@ -367,10 +366,6 @@ static int cpts_pin_start_external_timestamp(struct ptp_extts_request *req,
 			OMAP_TIMER_INT_CAPTURE | OMAP_TIMER_INT_OVERFLOW);
 	omap_dm_timer_start(pin->timer);
 
-	setup_timer(&pin->extts_state.timer, cpts_print_timer_value,
-			(unsigned long)pin);
-	mod_timer(&pin->extts_state.timer, jiffies + msecs_to_jiffies(1000));
-
 	return 0;
 }
 
@@ -400,7 +395,7 @@ static int cpts_pin_start_periodic_output(struct ptp_perout_request *req,
 	// setup an estimation of the time, the interrupt will get it more
 	// accurate before we enable the output.
 	div64_u64_rem(timecounter_read(&cpts->tc), 1000000000, &time_now);
-	cycles = (u32)div_u64(time_now * pin->timer->rate, 1000000000);
+	cycles = (u32)div64_u64(time_now * pin->timer->rate, 1000000000);
 	__omap_dm_timer_write(pin->timer, OMAP_TIMER_COUNTER_REG, load + cycles,
 			pin->timer->posted);
 
@@ -423,7 +418,7 @@ static irqreturn_t cpts_pin_interrupt(int irq, void *data)
 		}
 		if (irq_status & OMAP_TIMER_INT_CAPTURE) {
 			pin->extts_state.capture = __omap_dm_timer_read(
-					in->timer, OMAP_TIMER_CAPTURE_REG,
+					pin->timer, OMAP_TIMER_CAPTURE_REG,
 					pin->timer->posted);
 			schedule_work(&pin->capture_work);
 		}
@@ -448,7 +443,7 @@ static struct cpts_pin * cpts_get_pin(struct cpts *cpts, unsigned int index)
 
 static int cpts_pin_enable(struct cpts_pin *pin)
 {
-	u32 ctrl, mask;
+	int err;
 	struct cpts *cpts = container_of(pin, struct cpts,
 			pins[pin->ptp_pin->index]);
 
@@ -458,21 +453,13 @@ static int cpts_pin_enable(struct cpts_pin *pin)
 	if (!pin->timer)
 		return -EINVAL;
 
-	if (request_irq(omap_dm_timer_get_irq(pin->timer), cpts_timer_interrupt,
+	if (request_irq(omap_dm_timer_get_irq(pin->timer), cpts_pin_interrupt,
 				IRQF_TIMER, pin->ptp_pin->name, pin))
 		return -EIO;
 
-	// enable the pin in the cpts peripheral
-	switch (pin->ptp_pin->index) {
-	case 0: mask = HW1_TS_PUSH_EN; break;
-	case 1: mask = HW2_TS_PUSH_EN; break;
-	case 2: mask = HW3_TS_PUSH_EN; break;
-	case 3: mask = HW4_TS_PUSH_EN; break;
-	default: return -EINVAL;
-	}
-	ctrl = cpts_read32(cpts, control);
-	ctrl |= mask;
-	cpts_write32(cpts, ctrl, control);
+	err = cpts_set_hardware_push(cpts, pin->ptp_pin->index, true);
+	if (err)
+		return err;
 
 	// setup the timer clock source
 	omap_dm_timer_set_source(pin->timer, OMAP_TIMER_SRC_SYS_CLK);
@@ -483,7 +470,7 @@ static int cpts_pin_enable(struct cpts_pin *pin)
 
 static int cpts_pin_disable(struct cpts_pin *pin)
 {
-	u32 ctrl, mask;
+	int err;
 	struct cpts *cpts = container_of(pin, struct cpts,
 			pins[pin->ptp_pin->index]);
 
@@ -500,18 +487,9 @@ static int cpts_pin_disable(struct cpts_pin *pin)
 	omap_dm_timer_free(pin->timer);
 	pin->timer = NULL;
 
-	del_timer(&pin->extts_state.timer);
-
-	switch (pin->ptp_pin->index) {
-	case 0: mask = HW1_TS_PUSH_EN; break;
-	case 1: mask = HW2_TS_PUSH_EN; break;
-	case 2: mask = HW3_TS_PUSH_EN; break;
-	case 3: mask = HW4_TS_PUSH_EN; break;
-	default: return -EINVAL;
-	}
-	ctrl = cpts_read32(cpts, control);
-	ctrl &= ~mask;
-	cpts_write32(cpts, ctrl, control);
+	err = cpts_set_hardware_push(cpts, pin->ptp_pin->index, false);
+	if (err)
+		return err;
 
 	return 0;
 }
@@ -620,12 +598,12 @@ static struct device_node * cpts_pin_find_timer_by_name(
 	const char* prop_value;
 	struct device_node *cursor;
 
-	cursor = of_find_node_by_name(cursor, "timer");
+	cursor = of_find_node_by_name(NULL, "timer");
 	while (cursor) {
 		if (of_property_read_string(cursor, "ti,hwmods", &prop_value) ==
 				0 && strcmp(prop_value, name) == 0)
 			break;
-		cursor = of_find_node_by_name(cursor, "timer")
+		cursor = of_find_node_by_name(cursor, "timer");
 	}
 
 	return cursor;
@@ -649,6 +627,7 @@ int cpts_pin_register(struct cpts *cpts)
 		INIT_WORK(&cpts->pins[i].overflow_work,
 				cpts_pin_overflow_bottom_half);
 	}
+	return 0;
 }
 
 void cpts_pin_unregister(struct cpts *cpts)
@@ -657,7 +636,7 @@ void cpts_pin_unregister(struct cpts *cpts)
 
 	for (i = 0; i < CPTS_NUM_PINS; i++)
 	{
-		cpts_disable_pin(&cpts->pins[i]);
+		cpts_pin_disable(&cpts->pins[i]);
 		if(cpts->pins[i].timer)
 			omap_dm_timer_free(cpts->pins[i].timer);
 		if(cpts->pins[i].timerNode)

@@ -54,6 +54,38 @@ static int event_port(struct cpts_event *event)
 	return (event->high >> PORT_NUMBER_SHIFT) & PORT_NUMBER_MASK;
 }
 
+int cpts_set_hardware_push(struct cpts *cpts, unsigned long index, bool on)
+{
+	u32 mask;
+	u32 ctrl;
+
+	switch (index)
+	{
+	case 0:
+		mask = HW1_TS_PUSH_EN;
+		break;
+	case 1:
+		mask = HW2_TS_PUSH_EN;
+		break;
+	case 2:
+		mask = HW3_TS_PUSH_EN;
+		break;
+	case 3:
+		mask = HW4_TS_PUSH_EN;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	ctrl = cpts_read32(cpts, control);
+	if(on)
+		ctrl |= mask;
+	else
+		ctrl &= ~mask;
+	cpts_write32(cpts, ctrl, control);
+	return 0;
+}
+
 static int cpts_fifo_pop(struct cpts *cpts, u32 *high, u32 *low)
 {
 	u32 r = cpts_read32(cpts, intstat_raw);
@@ -70,7 +102,7 @@ static int cpts_fifo_pop(struct cpts *cpts, u32 *high, u32 *low)
 /*
  * Returns zero if matching event type was found.
  */
-static int cpts_fifo_read(struct cpts *cpts, int match)
+int cpts_fifo_read(struct cpts *cpts, int match)
 {
 	int i, type = -1;
 	u32 hi, lo;
@@ -95,8 +127,8 @@ static int cpts_fifo_read(struct cpts *cpts, int match)
 			pevent.index = event_port(event) - 1;
             if(cpts->pins[pevent.index].state.type == PTP_CLK_REQ_PEROUT)
             {
-                cpts->pins[pevent.index].capture = pevent.timestamp;
-                cpts->pins[pevent.index].new_capture = true;
+                cpts->pins[pevent.index].perout_state.capture = pevent.timestamp;
+                cpts->pins[pevent.index].perout_state.capture_valid = true;
             }
             else
             {
@@ -393,7 +425,6 @@ int cpts_register(struct device *dev, struct cpts *cpts,
 #ifdef CONFIG_TI_CPTS
 	int err, i;
 	unsigned long flags;
-        const char *prop_name;
 
 	cpts->info = cpts_info;
 	cpts->clock = ptp_clock_register(&cpts->info, dev);

@@ -1,5 +1,5 @@
 obj-m += ti_cpsw_ppsout.o
-ti_cpsw_ppsout-y := cpsw.o cpts.o
+ti_cpsw_ppsout-y := cpsw.o cpts.o cpts_pin.o
 
 SRC := $(shell pwd)
 

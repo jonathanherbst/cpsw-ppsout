@@ -30,6 +30,8 @@
 #define CPTS_NUM_PINS 4
 #define CPTS_AVERAGE_LEN 4  // needs to be power of 2
 
+struct cpts;
+
 struct cpts_extts_state {
 	volatile u32 capture;
 	bool new_capture;
@@ -66,7 +68,7 @@ struct cpts_pin {
 	};
 };
 
-struct ptp_pin_desc cpts_pins[CPTS_NUM_PINS];
+extern struct ptp_pin_desc cpts_pins[CPTS_NUM_PINS];
 
 int cpts_pin_ptp_enable(struct ptp_clock_info *ptp,
 		struct ptp_clock_request *rq, int on);
