@@ -76,7 +76,7 @@ static void cpts_pin_set_array(void* a, void* v, int v_size, int l)
 
 static s32 cpts_pin_extts_calculate_deficit(struct cpts_pin *pin)
 {
-	unsigned long index = pin->perout_state.index;
+	unsigned long index = pin->extts_state.index;
 	return pin->extts_state.capture > (0ul - pin->extts_state.period / 2) ?
 			-(s32)(0ul - pin->extts_state.capture) :
 			(s32)(pin->extts_state.capture -
@@ -86,8 +86,9 @@ static s32 cpts_pin_extts_calculate_deficit(struct cpts_pin *pin)
 static u32 cpts_pin_extts_calculate_period(struct cpts_pin *pin)
 {
 	unsigned long indexm1;
-	unsigned long index = pin->perout_state.index;
+	unsigned long index = pin->extts_state.index;
 	indexm1 = cpts_pin_index(index - 1);
+	pr_info("period = 0 - %u + %d - %d", pin->extts_state.load[indexm1], pin->extts_state.deficit[index], pin->extts_state.deficit[indexm1]);
 	return 0ul - pin->extts_state.load[indexm1] +
 		pin->extts_state.deficit[index] -
 		pin->extts_state.deficit[indexm1];
@@ -95,7 +96,7 @@ static u32 cpts_pin_extts_calculate_period(struct cpts_pin *pin)
 
 static u32 cpts_pin_extts_calculate_reload(struct cpts_pin *pin)
 {
-	unsigned long index = pin->perout_state.index;
+	unsigned long index = pin->extts_state.index;
 	return 0ul - (u32)(2 * pin->extts_state.period -
 			(0ul - pin->extts_state.load[index]) +
 			pin->extts_state.deficit[index]);
@@ -105,7 +106,7 @@ static void cpts_pin_extts_set_reload(struct cpts_pin *pin)
 {
 	u32 period;
 	unsigned long indexp1;
-	unsigned long index = pin->perout_state.index;
+	unsigned long index = pin->extts_state.index;
 	indexp1 = cpts_pin_index(index + 1);
 
 	pin->extts_state.deficit[index] = cpts_pin_extts_calculate_deficit(pin);
@@ -199,8 +200,8 @@ static void cpts_pin_perout_set_reload(struct cpts_pin* pin)
 	pin->perout_state.load[indexp1] = cpts_pin_perout_calculate_reload(pin);
 
 	__omap_dm_timer_write(pin->timer, OMAP_TIMER_LOAD_REG,
-			pin->extts_state.load[indexp1], pin->timer->posted);
-	pin->timer->context.tldr = pin->extts_state.load[indexp1];
+			pin->perout_state.load[indexp1], pin->timer->posted);
+	pin->timer->context.tldr = pin->perout_state.load[indexp1];
 	index = indexp1;
 }
 
@@ -246,11 +247,13 @@ static void cpts_pin_capture_bottom_half(struct work_struct *work)
 			pin->extts_state.last_capture_valid = false;
 			break;
 		} else if (pin->extts_state.period != 0) {
-			indexp1 = cpts_pin_index(pin->perout_state.index + 1);
+			indexp1 = cpts_pin_index(pin->extts_state.index + 1);
 			cpts_pin_extts_set_reload(pin);
-			pr_info("cpts: capture %s load value %u",
+			pr_info("cpts: capture %s load value %u deficit %d period %u",
 					pin->ptp_pin->name,
-					pin->extts_state.load[indexp1]);
+					pin->extts_state.load[indexp1],
+					pin->extts_state.deficit[cpts_pin_index(indexp1 - 1)],
+					pin->extts_state.period);
 		}
 		pin->extts_state.last_capture = pin->extts_state.capture;
 		pin->extts_state.last_capture_valid = true;
