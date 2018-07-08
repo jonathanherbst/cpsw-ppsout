@@ -122,18 +122,16 @@ int cpts_fifo_read(struct cpts *cpts, int match)
 		type = event_type(event);
 		switch (type) {
 		case CPTS_EV_HW:
+			pr_info("CPTS_EV_HW\n");
 			pevent.timestamp = timecounter_cyc2time(&cpts->tc, event->low);
 			pevent.type = PTP_CLOCK_EXTTS;
 			pevent.index = event_port(event) - 1;
-            if(cpts->pins[pevent.index].state.type == PTP_CLK_REQ_PEROUT)
-            {
-                cpts->pins[pevent.index].perout_state.capture = pevent.timestamp;
-                cpts->pins[pevent.index].perout_state.capture_valid = true;
-            }
-            else
-            {
-			    ptp_clock_event(cpts->clock, &pevent);
-            }
+			if(cpts->pins[pevent.index].state.type == PTP_CLK_REQ_PEROUT) {
+				cpts->pins[pevent.index].perout_state.capture = pevent.timestamp;
+				cpts->pins[pevent.index].perout_state.capture_valid = true;
+			} else {
+				ptp_clock_event(cpts->clock, &pevent);
+			}
 			break;
 		case CPTS_EV_PUSH:
 		case CPTS_EV_RX:
@@ -271,6 +269,7 @@ static struct ptp_clock_info cpts_info = {
 	.max_adj	= 1000000,
 	.n_alarm    	= 0,
 	.n_ext_ts	= CPTS_NUM_PINS,
+	.n_per_out	= CPTS_NUM_PINS,
 	.n_pins		= CPTS_NUM_PINS,
 	.pps		= 0,
 	.pin_config 	= cpts_pins,

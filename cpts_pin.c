@@ -170,9 +170,14 @@ static s32 cpts_pin_deficit_avg(const s32 *deficit)
 	return (s32)div64_s64(sum, CPTS_AVERAGE_LEN);
 }
 
-static u64 cpts_pin_est_ns(struct cpts_pin* pin, u32 cycles)
+inline u64 cpts_pin_est_ns(struct cpts_pin* pin, u32 cycles)
 {
 	return div64_u64((u64)cycles * 1000000000, pin->timer->rate);
+}
+
+inline u32 cpts_pin_est_cyc(struct cpts_pin *pin, u64 ns)
+{
+	return (u32)div64_u64(ns * pin->timer->rate, 1000000000);
 }
 
 static void cpts_pin_perout_set_reload(struct cpts_pin* pin)
@@ -394,14 +399,22 @@ static int cpts_pin_start_periodic_output(struct ptp_perout_request *req,
 	// setup autoload so we overflow once per second.
 	load = 0ul - pin->timer->rate;
 	omap_dm_timer_set_load(pin->timer, 1, load);
+	pr_info("cpts: perout set load %u\n", load);
+
+	cpts_pin_set_array(pin->perout_state.load, &load, sizeof(load),
+			CPTS_AVERAGE_LEN);
 
 	// setup an estimation of the time, the interrupt will get it more
 	// accurate before we enable the output.
 	div64_u64_rem(timecounter_read(&cpts->tc), 1000000000, &time_now);
-	cycles = (u32)div64_u64(time_now * pin->timer->rate, 1000000000);
+	cycles = cpts_pin_est_cyc(pin, time_now);
+	//cycles = (u32)div64_u64(time_now * pin->timer->rate, 1000000000);
+	omap_dm_timer_enable(pin->timer);
 	__omap_dm_timer_write(pin->timer, OMAP_TIMER_COUNTER_REG, load + cycles,
 			pin->timer->posted);
+	pr_info("cpts: perout cycles left %u\n", cycles);
 
+	omap_dm_timer_set_int_enable(pin->timer, OMAP_TIMER_INT_OVERFLOW);
 	omap_dm_timer_start(pin->timer);
 
 	return 0;
@@ -547,6 +560,7 @@ extts_error:
 
 		cpts_pin_disable(pin);
 
+		pr_info("cpts: check pin on %d\n", on);
 		if (!on)
 			return 0;
 
@@ -558,10 +572,12 @@ extts_error:
 		if (err)
 			goto perout_error;
 		
+		pr_info("cpts: start success %d\n", rq->perout.index);
 		pin->state = *rq;
 		return 0;
 
 perout_error:
+		pr_info("cpts: error %d\n", err);
 		cpts_pin_disable(pin);
 		return err;
 
