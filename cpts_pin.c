@@ -70,8 +70,8 @@ inline u32 cpts_pin_weighted_avg(u32 a, u32 a_weight, u32 b, u32 b_weight)
 static void cpts_pin_set_array(void* a, void* v, int v_size, int l)
 {
 	u8* ptr = a;
-	for(; ptr < (u8*)a + v_size * l; ++ptr)
-	  memcpy(a, v, v_size);
+	for(; ptr < (u8*)a + v_size * l; ptr += v_size)
+	  memcpy(ptr, v, v_size);
 }
 
 static s32 cpts_pin_extts_calculate_deficit(struct cpts_pin *pin)
@@ -138,7 +138,8 @@ static void cpts_pin_extts_set_reload(struct cpts_pin *pin)
 static u32 cpts_pin_perout_calculate_period(struct cpts_pin *pin)
 {
 	unsigned long indexm1 = cpts_pin_index(pin->perout_state.index - 1);
-	return (u32)div64_u64((u64)(0lu - pin->perout_state.load[indexm1]) *
+	pr_info("cpts: perout calc period, load %u, cap %llu, last cap %llu\n", pin->perout_state.load[indexm1], pin->perout_state.capture, pin->perout_state.last_capture);
+	return (u32)div64_u64((u64)(0ul - pin->perout_state.load[indexm1]) *
 			1000000000, pin->perout_state.capture -
 			pin->perout_state.last_capture);
 }
@@ -148,14 +149,15 @@ static s32 cpts_pin_perout_calculate_deficit(struct cpts_pin *pin)
 	u64 tmp;
 	div64_u64_rem(pin->perout_state.capture, 1000000000, &tmp);
 	tmp = cpts_pin_ns_to_cycles(pin, pin->perout_state.period, tmp);
-	return tmp > pin->perout_state.period / 2 ? -(s32)tmp : (s32)tmp ;
+	return tmp > pin->perout_state.period / 2 ?
+		-(s32)(pin->perout_state.period - tmp) : (s32)tmp ;
 }
 
 static u32 cpts_pin_perout_calculate_reload(struct cpts_pin *pin)
 {
 	unsigned long index = pin->perout_state.index;
 	return 0ul - (u32)(2 * pin->perout_state.period -
-			(0ul - pin->perout_state.load[index]) +
+			(0ul - pin->perout_state.load[index]) -
 			pin->perout_state.deficit[index]);
 }
 
@@ -190,6 +192,7 @@ static void cpts_pin_perout_set_reload(struct cpts_pin* pin)
 	indexp1 = cpts_pin_index(index + 1);
 
 	period = cpts_pin_perout_calculate_period(pin);
+	pr_info("cpts: perout period %u\n", period);
 	pin->perout_state.period = cpts_pin_weighted_avg(
 			pin->perout_state.period, 3, period, 1);
 
@@ -202,12 +205,15 @@ static void cpts_pin_perout_set_reload(struct cpts_pin* pin)
 				CPTS_AVERAGE_LEN);
 		pin->perout_state.deficit_valid = true;
 	}
+	pr_info("cpts: perout reload calc period %u, deficit %d, load %u\n", pin->perout_state.period, pin->perout_state.deficit[index], pin->perout_state.load[index]);
 	pin->perout_state.load[indexp1] = cpts_pin_perout_calculate_reload(pin);
+	pr_info("cpts: perout reload %u\n", pin->perout_state.load[indexp1]);
 
 	__omap_dm_timer_write(pin->timer, OMAP_TIMER_LOAD_REG,
 			pin->perout_state.load[indexp1], pin->timer->posted);
 	pin->timer->context.tldr = pin->perout_state.load[indexp1];
-	index = indexp1;
+	
+	pin->perout_state.index = indexp1;
 }
 
 static void cpts_pin_capture_bottom_half(struct work_struct *work)
@@ -273,15 +279,19 @@ static void cpts_pin_overflow_bottom_half(struct work_struct *work)
 {
 	u32 ctrl;
 	s32 avg;
+	u32 match;
 	struct cpts_pin *pin = container_of(work, struct cpts_pin,
 			overflow_work);
 	struct cpts *cpts = container_of(pin, struct cpts,
 			pins[pin->ptp_pin->index]);
 
-	// read out all HW events (could be multiple)
-	while(cpts_fifo_read(cpts, CPTS_EV_HW) == 0);
+	// read all events
+	cpts_fifo_read(cpts, -1);
 
 	pr_info("cpts: overflow hit");
+	ctrl = __omap_dm_timer_read(pin->timer,
+		OMAP_TIMER_CTRL_REG, pin->timer->posted);
+	pr_info("cpts: ctrl %u\n", ctrl);
 
 	switch(pin->state.type)
 	{
@@ -313,6 +323,13 @@ static void cpts_pin_overflow_bottom_half(struct work_struct *work)
 		break;
 	case PTP_CLK_REQ_PEROUT:
 		if (pin->perout_state.capture_valid) {
+			pin->perout_state.capture_valid = false;
+
+			match = pin->perout_state.load[pin->perout_state.index] +
+				pin->perout_state.period / 2;
+			__omap_dm_timer_write(pin->timer, OMAP_TIMER_MATCH_REG,
+				match, pin->timer->posted);
+			pin->timer->context.tmar = match;
 			if (pin->perout_state.last_capture_valid)
 				cpts_pin_perout_set_reload(pin);
 
@@ -322,17 +339,19 @@ static void cpts_pin_overflow_bottom_half(struct work_struct *work)
 
 			ctrl = __omap_dm_timer_read(pin->timer,
 				OMAP_TIMER_CTRL_REG, pin->timer->posted);
+			pr_info("cpts: peroit ctrl %u\n", ctrl);
 
 			avg = cpts_pin_deficit_avg(pin->perout_state.deficit);
-			pr_info("cpts: perout overflow deficit avg %d", avg);
-			if (ctrl & OMAP_TIMER_CTRL_GPOCFG &&
+			pr_info("cpts: perout overflow deficit avg %d\n", avg);
+			/*if (ctrl & OMAP_TIMER_CTRL_GPOCFG &&
 					cpts_pin_est_ns(pin, avg) < 500) {
 				ctrl &= ~OMAP_TIMER_CTRL_GPOCFG;
+				pr_info("cpts: peroit ctrl %u\n", ctrl);
 				__omap_dm_timer_write(pin->timer,
 					OMAP_TIMER_CTRL_REG, ctrl,
 					pin->timer->posted);
 				pin->timer->context.tclr = ctrl;
-			}
+			}*/
 		}
 		break;
 	default:
@@ -391,7 +410,8 @@ static int cpts_pin_start_periodic_output(struct ptp_perout_request *req,
 
 	omap_dm_timer_enable(pin->timer);
 
-	ctrl = OMAP_TIMER_CTRL_GPOCFG | OMAP_TIMER_CTRL_PT | 2 << 10;
+	//ctrl = OMAP_TIMER_CTRL_GPOCFG | OMAP_TIMER_CTRL_PT | 2 << 10;
+	ctrl = 1 << 10;
 	__omap_dm_timer_write(pin->timer, OMAP_TIMER_CTRL_REG, ctrl,
 			pin->timer->posted);
 	pin->timer->context.tclr = ctrl;
@@ -401,21 +421,19 @@ static int cpts_pin_start_periodic_output(struct ptp_perout_request *req,
 	omap_dm_timer_set_load(pin->timer, 1, load);
 	pr_info("cpts: perout set load %u\n", load);
 
+	pin->perout_state.period = pin->timer->rate;
 	cpts_pin_set_array(pin->perout_state.load, &load, sizeof(load),
 			CPTS_AVERAGE_LEN);
+
+	omap_dm_timer_set_int_enable(pin->timer, OMAP_TIMER_INT_OVERFLOW);
+	omap_dm_timer_start(pin->timer);
 
 	// setup an estimation of the time, the interrupt will get it more
 	// accurate before we enable the output.
 	div64_u64_rem(timecounter_read(&cpts->tc), 1000000000, &time_now);
 	cycles = cpts_pin_est_cyc(pin, time_now);
-	//cycles = (u32)div64_u64(time_now * pin->timer->rate, 1000000000);
-	omap_dm_timer_enable(pin->timer);
-	__omap_dm_timer_write(pin->timer, OMAP_TIMER_COUNTER_REG, load + cycles,
-			pin->timer->posted);
+	omap_dm_timer_write_counter(pin->timer, load + cycles);
 	pr_info("cpts: perout cycles left %u\n", cycles);
-
-	omap_dm_timer_set_int_enable(pin->timer, OMAP_TIMER_INT_OVERFLOW);
-	omap_dm_timer_start(pin->timer);
 
 	return 0;
 }
@@ -440,6 +458,10 @@ static irqreturn_t cpts_pin_interrupt(int irq, void *data)
 		}
 		break;
 	case PTP_CLK_REQ_PEROUT:
+		// overflow first so we don't overwrite the load value
+		if (irq_status & OMAP_TIMER_INT_OVERFLOW) {
+			schedule_work(&pin->overflow_work);
+		}
 	default:
 		break;
 	}
