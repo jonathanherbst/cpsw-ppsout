@@ -24,6 +24,9 @@
 #include "cpts.h"
 #include "cpts_pin.h"
 
+#define TIMER_CLOCK_OFFSET  30
+#define TIMER_CLOCK_MASK    0xC0000000
+
 struct ptp_pin_desc cpts_pins[CPTS_NUM_PINS] = {
 	{
 		.name = "timer4",
@@ -479,7 +482,7 @@ static struct cpts_pin * cpts_get_pin(struct cpts *cpts, unsigned int index)
 	return cpts->pins + index;
 }
 
-static int cpts_pin_enable(struct cpts_pin *pin)
+static int cpts_pin_enable(struct cpts_pin *pin, int timer_source)
 {
 	int err;
 	struct cpts *cpts = container_of(pin, struct cpts,
@@ -500,7 +503,7 @@ static int cpts_pin_enable(struct cpts_pin *pin)
 		return err;
 
 	// setup the timer clock source
-	omap_dm_timer_set_source(pin->timer, OMAP_TIMER_SRC_SYS_CLK);
+	omap_dm_timer_set_source(pin->timer, timer_source);
 	pin->timer->rate = clk_get_rate(pin->timer->fclk);
 	pr_info("cpts: timer rate: %lu Hz", pin->timer->rate);
 	return 0;
@@ -536,6 +539,7 @@ int cpts_pin_ptp_enable(struct ptp_clock_info *ptp,
 			struct ptp_clock_request *rq, int on)
 {
 	int err = 0;
+    int timer_source;
 	struct cpts_pin *pin;
 	struct cpts *cpts = container_of(ptp, struct cpts, info);
 	pr_info("cpts: ptp_enable %d\n", rq->type);
@@ -558,7 +562,8 @@ int cpts_pin_ptp_enable(struct ptp_clock_info *ptp,
 			return 0;
 		
 		pr_info("cpts: enable pin\n");
-		err = cpts_pin_enable(pin);
+		timer_source = (rq->extts.flags & TIMER_CLOCK_MASK) >> TIMER_CLOCK_OFFSET;
+		err = cpts_pin_enable(pin, timer_source);
 		if (err)
 			goto extts_error;
 
@@ -586,7 +591,8 @@ extts_error:
 		if (!on)
 			return 0;
 
-		err = cpts_pin_enable(pin);
+		timer_source = (rq->extts.flags & TIMER_CLOCK_MASK) >> TIMER_CLOCK_OFFSET;
+		err = cpts_pin_enable(pin, timer_source);
 		if (err)
 			goto perout_error;
 
