@@ -152,12 +152,12 @@ int cpts_fifo_read(struct cpts *cpts, int match)
 	return type == match ? 0 : -1;
 }
 
-static cycle_t cpts_systim_read(const struct cyclecounter *cc)
+cycle_t cpts_systim_read_anycc(struct cpts * cpts,
+		const struct cyclecounter *cc)
 {
 	u64 val = 0;
 	struct cpts_event *event;
 	struct list_head *this, *next;
-	struct cpts *cpts = container_of(cc, struct cpts, cc);
 
 	cpts_write32(cpts, TS_PUSH, ts_push);
 	if (cpts_fifo_read(cpts, CPTS_EV_PUSH))
@@ -174,6 +174,13 @@ static cycle_t cpts_systim_read(const struct cyclecounter *cc)
 	}
 
 	return val;
+}
+
+static cycle_t cpts_systim_read(const struct cyclecounter *cc)
+{
+	struct cpts *cpts = container_of(cc, struct cpts, cc);
+
+	return cpts_systim_read_anycc(cpts, cc);
 }
 
 /* PTP clock operations */

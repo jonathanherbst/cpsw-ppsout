@@ -562,7 +562,8 @@ int cpts_pin_ptp_enable(struct ptp_clock_info *ptp,
 			return 0;
 		
 		pr_info("cpts: enable pin\n");
-		timer_source = (rq->extts.flags & TIMER_CLOCK_MASK) >> TIMER_CLOCK_OFFSET;
+		timer_source = (rq->extts.flags & TIMER_CLOCK_MASK) >>
+			TIMER_CLOCK_OFFSET;
 		err = cpts_pin_enable(pin, timer_source);
 		if (err)
 			goto extts_error;
@@ -591,7 +592,8 @@ extts_error:
 		if (!on)
 			return 0;
 
-		timer_source = (rq->extts.flags & TIMER_CLOCK_MASK) >> TIMER_CLOCK_OFFSET;
+		timer_source = (rq->extts.flags & TIMER_CLOCK_MASK) >>
+			TIMER_CLOCK_OFFSET;
 		err = cpts_pin_enable(pin, timer_source);
 		if (err)
 			goto perout_error;
