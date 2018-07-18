@@ -745,6 +745,28 @@ static int cpts_ptp_settime(struct ptp_clock_info *ptp,
 	return 0;
 }
 
+static int dmtimer_pps_probe_dt(struct dmtimer_pps *dmtpps,
+		struct platform_device *pdev)
+{
+
+}
+
+static int dmtimer_pps_probe(struct platform_device *pdev)
+{
+	struct dmtimer_pps *dmtpps;
+
+	dmtpps = devm_kzalloc(&pdev->dev, sizeof(struct dmtimer_pps),
+			GFP_KERNEL);
+	if(!dmtpps)
+		return -ENOMEM;
+
+	memset(dmtpps, 0, sizeof(struct dmtimer_pps));
+
+	dmtpps->dev = &pdev->dev;
+
+	dmtimer_pps_probe_dt(dmtpps, pdev);
+}
+
 int cpts_pin_register(struct cpts *cpts)
 {
 	int i;

@@ -69,13 +69,14 @@ struct cpts_pin {
 	};
 };
 
-struct cpts_pin_info {
+struct dmtimer_pps {
+	u32 cc_mult; /* for the nominal frequency */
 	struct ptp_clock_info ptp_info;
 	struct ptp_clock *ptp_clock;
 	struct cyclecounter cc;
 	struct timecounter tc;
 	int phc_index;
-	struct cpts_pin pins[CPTS_NUM_PINS];
+	struct omap_dm_timer *timer;
 };
 
 extern struct ptp_pin_desc cpts_pins[CPTS_NUM_PINS];
