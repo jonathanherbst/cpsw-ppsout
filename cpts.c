@@ -452,8 +452,6 @@ int cpts_register(struct device *dev, struct cpts *cpts,
 	for (i = 0; i < CPTS_MAX_EVENTS; i++)
 		list_add(&cpts->pool_data[i].list, &cpts->pool);
 
-  cpts_pin_register(cpts);
-
 	cpts_clk_init(dev, cpts);
 	cpts_write32(cpts, CPTS_EN, control);
 	cpts_write32(cpts, TS_PEND_EN, int_enable);
@@ -466,6 +464,8 @@ int cpts_register(struct device *dev, struct cpts *cpts,
 	schedule_delayed_work(&cpts->overflow_work, CPTS_OVERFLOW_PERIOD);
 
 	cpts->phc_index = ptp_clock_index(cpts->clock);
+
+	cpts_pin_register(cpts);
 #endif
 	return 0;
 }
@@ -473,7 +473,7 @@ int cpts_register(struct device *dev, struct cpts *cpts,
 void cpts_unregister(struct cpts *cpts)
 {
 #ifdef CONFIG_TI_CPTS
-    cpts_pin_unregister(cpts);
+	cpts_pin_unregister(cpts);
 
 	if (cpts->clock) {
 		ptp_clock_unregister(cpts->clock);

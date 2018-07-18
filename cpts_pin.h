@@ -24,6 +24,7 @@
 #include <linux/of.h>
 #include <linux/workqueue.h>
 #include <linux/ptp_clock_kernel.h>
+#include <linux/timecounter.h>
 
 #include <arch/arm/plat-omap/include/plat/dmtimer.h>
 
@@ -66,6 +67,15 @@ struct cpts_pin {
 		struct cpts_extts_state extts_state;
 		struct cpts_perout_state perout_state;
 	};
+};
+
+struct cpts_pin_info {
+	struct ptp_clock_info ptp_info;
+	struct ptp_clock *ptp_clock;
+	struct cyclecounter cc;
+	struct timecounter tc;
+	int phc_index;
+	struct cpts_pin pins[CPTS_NUM_PINS];
 };
 
 extern struct ptp_pin_desc cpts_pins[CPTS_NUM_PINS];

@@ -658,24 +658,126 @@ static struct device_node * cpts_pin_find_timer_by_name(
 	return cursor;
 }
 
+static cycle_t cpts_pin_systim_read(const struct cyclecounter *cc)
+{
+	struct cpts_pin_info *pin = container_of(cc, struct cpts_pin_info, cc);
+	struct cpts *cpts = container_of(pin, struct cpts, pins_info);
+
+	cpts_systim_read_anycc(cpts, cc);
+}
+
+static int cpts_ptp_adjfreq(struct ptp_clock_info *ptp, s32 ppb)
+{
+	u64 adj;
+	u32 diff, mult;
+	int neg_adj = 0;
+	unsigned long flags;
+	struct cpts_pins_info *pins = container_of(ptp, struct cpts_pins_info,
+			ptp_info);
+	struct cpts *cpts = container_of(pins, struct cpts, pins_info);
+
+	if (ppb < 0) {
+		neg_adj = 1;
+		ppb = -ppb;
+	}
+	mult = pins->cc_mult;
+	adj = mult;
+	adj *= ppb;
+	diff = div_u64(adj, 1000000000ULL);
+
+	spin_lock_irqsave(&cpts->lock, flags);
+
+	timecounter_read(&pins->tc);
+
+	pins->cc.mult = neg_adj ? mult - diff : mult + diff;
+
+	spin_unlock_irqrestore(&cpts->lock, flags);
+
+	return 0;
+}
+
+static int cpts_ptp_adjtime(struct ptp_clock_info *ptp, s64 delta)
+{
+	unsigned long flags;
+	struct cpts_pins_info *pins = container_of(ptp, struct cpts_pins_info,
+			ptp_info);
+	struct cpts *cpts = container_of(pins, struct cpts, pins_info);
+
+	spin_lock_irqsave(&cpts->lock, flags);
+	timecounter_adjtime(&pins->tc, delta);
+	spin_unlock_irqrestore(&cpts->lock, flags);
+
+	return 0;
+}
+
+static int cpts_ptp_gettime(struct ptp_clock_info *ptp, struct timespec64 *ts)
+{
+	u64 ns;
+	unsigned long flags;
+	struct cpts_pins_info *pins = container_of(ptp, struct cpts_pins_info,
+			ptp_info);
+	struct cpts *cpts = container_of(pins, struct cpts, pins_info);
+
+	spin_lock_irqsave(&cpts->lock, flags);
+	ns = timecounter_read(&pins->tc);
+	spin_unlock_irqrestore(&cpts->lock, flags);
+
+	*ts = ns_to_timespec64(ns);
+
+	return 0;
+}
+
+static int cpts_ptp_settime(struct ptp_clock_info *ptp,
+			    const struct timespec64 *ts)
+{
+	u64 ns;
+	unsigned long flags;
+	struct cpts_pins_info *pins = container_of(ptp, struct cpts_pins_info,
+			ptp_info);
+	struct cpts *cpts = container_of(pins, struct cpts, pins_info);
+
+	ns = timespec64_to_ns(ts);
+
+	spin_lock_irqsave(&cpts->lock, flags);
+	timecounter_init(&pins->tc, &pins->cc, ns);
+	spin_unlock_irqrestore(&cpts->lock, flags);
+
+	return 0;
+}
+
 int cpts_pin_register(struct cpts *cpts)
 {
 	int i;
 
+	struct cpts_pin_info* pins = &cpts->pins_info;
+
+	pins->cc.read = cpts_pin_systim_read;
+	pins->cc.mask = CLOCKSOURCE_MASK(32);
+	pins->cc_mult = mult;
+	pins->cc.mult = mult;
+	pins->cc.shift = shift;
+
+	spin_lock_irqsave(&cpts->lock, flags);
+	timecounter_init(&pins->tc, &pins->cc, ktime_to_ns(ktime_get_real()));
+	spin_unlock_irqrestore(&cpts->lock, flags);
+
 	for (i = 0; i < CPTS_NUM_PINS; i++)
 	{
-		cpts->pins[i].ptp_pin = cpts->info.pin_config + i;
-		cpts->pins[i].timerNode = cpts_pin_find_timer_by_name(NULL,
-				cpts->pins[i].ptp_pin->name);
-		if (!cpts->pins[i].timerNode)
+		pins->pins[i].ptp_pin = pins->ptp_info.pin_config + i;
+		pins->pins[i].timerNode = cpts_pin_find_timer_by_name(NULL,
+				pins->pins[i].ptp_pin->name);
+		if (!pins->pins[i].timerNode)
 			pr_warn("cpts: unable to find %s in device tree",
-					cpts->pins[i].ptp_pin->name);
-		cpts->pins[i].timer = NULL;
-		INIT_WORK(&cpts->pins[i].capture_work,
+					pins->pins[i].ptp_pin->name);
+		pins->pins[i].timer = NULL;
+		INIT_WORK(&pins->pins[i].capture_work,
 				cpts_pin_capture_bottom_half);
-		INIT_WORK(&cpts->pins[i].overflow_work,
+		INIT_WORK(&pins->pins[i].overflow_work,
 				cpts_pin_overflow_bottom_half);
 	}
+
+	pins->phc_index = ptp_clock_index(pins->ptp_clock);
+
 	return 0;
 }
 
