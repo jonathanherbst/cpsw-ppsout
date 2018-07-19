@@ -682,6 +682,12 @@ static int dmtimer_pps_probe(struct platform_device *pdev)
 	err = dmtimer_pps_probe_dt(dmtpps, pdev);
 	if(err)
 		return err;
+
+	dmtpps->mode = PPS_CAPTUREBOTH | PPS_ECHOASSERT | PPS_ECHOCLEAR |
+		PPS_CANWAIT | PPS_TSFMT_TSPEC;
+	dmtpps->pps = pps_register_source(&dmtpps->mode, PPS_CAPTUREASSERT);
+	if(!dmtpps->pps)
+		return -EINVAL;
 		
 	err = devm_request_irq(&pdev->dev,
 			omap_dm_timer_get_irq(dmtpps->timer),
@@ -695,7 +701,6 @@ static int dmtimer_pps_probe(struct platform_device *pdev)
 	INIT_WORK(dmtpps.capture_work, dmtimer_pps_capture_bottom_half);
 	INIT_WORK(dmtpps.overflow_work, dmtimer_pps_overflow_bottom_half);
 
-	dmtpps->mode = PPS_CAPTUREBOTH | PPS_ECHOASSERT | PPS_ECHOCLEAR | PPS_CANWAIT;
 }
 
 static int dmtimer_pps_remove(struct platform_device *pdev)
