@@ -28,10 +28,7 @@
 
 #include <arch/arm/plat-omap/include/plat/dmtimer.h>
 
-#define CPTS_NUM_PINS 4
 #define CPTS_AVERAGE_LEN 4  // needs to be power of 2
-
-struct cpts;
 
 struct cpts_extts_state {
 	volatile u32 capture;
@@ -56,27 +53,16 @@ struct cpts_perout_state {
 	bool deficit_valid;
 };
 
-struct cpts_pin {
-	struct device_node *timerNode;
+struct dmtimer_pps {
+	struct pps_device *pps;
+	struct pps_source_info info;
 	struct omap_dm_timer *timer;
-	struct ptp_pin_desc *ptp_pin;
-	struct ptp_clock_request state;
 	struct work_struct capture_work;
 	struct work_struct overflow_work;
 	union {
 		struct cpts_extts_state extts_state;
 		struct cpts_perout_state perout_state;
 	};
-};
-
-struct dmtimer_pps {
-	u32 cc_mult; /* for the nominal frequency */
-	struct ptp_clock_info ptp_info;
-	struct ptp_clock *ptp_clock;
-	struct cyclecounter cc;
-	struct timecounter tc;
-	int phc_index;
-	struct omap_dm_timer *timer;
 };
 
 extern struct ptp_pin_desc cpts_pins[CPTS_NUM_PINS];

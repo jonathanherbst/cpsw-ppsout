@@ -27,33 +27,6 @@
 #define TIMER_CLOCK_OFFSET  30
 #define TIMER_CLOCK_MASK    0xC0000000
 
-struct ptp_pin_desc cpts_pins[CPTS_NUM_PINS] = {
-	{
-		.name = "timer4",
-		.index = 0,
-		.func = PTP_PF_NONE,
-		.chan = 0
-	},
-	{
-		.name = "timer5",
-		.index = 1,
-		.func = PTP_PF_NONE,
-		.chan = 1
-	},
-	{
-		.name = "timer6",
-		.index = 2,
-		.func = PTP_PF_NONE,
-		.chan = 2
-	},
-	{
-		.name = "timer7",
-		.index = 3,
-		.func = PTP_PF_NONE,
-		.chan = 3
-	}
-};
-
 inline unsigned long cpts_pin_index(unsigned long index)
 {
 	return index & (CPTS_AVERAGE_LEN - 1);
@@ -658,102 +631,44 @@ static struct device_node * cpts_pin_find_timer_by_name(
 	return cursor;
 }
 
-static cycle_t cpts_pin_systim_read(const struct cyclecounter *cc)
-{
-	struct cpts_pin_info *pin = container_of(cc, struct cpts_pin_info, cc);
-	struct cpts *cpts = container_of(pin, struct cpts, pins_info);
-
-	cpts_systim_read_anycc(cpts, cc);
-}
-
-static int cpts_ptp_adjfreq(struct ptp_clock_info *ptp, s32 ppb)
-{
-	u64 adj;
-	u32 diff, mult;
-	int neg_adj = 0;
-	unsigned long flags;
-	struct cpts_pins_info *pins = container_of(ptp, struct cpts_pins_info,
-			ptp_info);
-	struct cpts *cpts = container_of(pins, struct cpts, pins_info);
-
-	if (ppb < 0) {
-		neg_adj = 1;
-		ppb = -ppb;
-	}
-	mult = pins->cc_mult;
-	adj = mult;
-	adj *= ppb;
-	diff = div_u64(adj, 1000000000ULL);
-
-	spin_lock_irqsave(&cpts->lock, flags);
-
-	timecounter_read(&pins->tc);
-
-	pins->cc.mult = neg_adj ? mult - diff : mult + diff;
-
-	spin_unlock_irqrestore(&cpts->lock, flags);
-
-	return 0;
-}
-
-static int cpts_ptp_adjtime(struct ptp_clock_info *ptp, s64 delta)
-{
-	unsigned long flags;
-	struct cpts_pins_info *pins = container_of(ptp, struct cpts_pins_info,
-			ptp_info);
-	struct cpts *cpts = container_of(pins, struct cpts, pins_info);
-
-	spin_lock_irqsave(&cpts->lock, flags);
-	timecounter_adjtime(&pins->tc, delta);
-	spin_unlock_irqrestore(&cpts->lock, flags);
-
-	return 0;
-}
-
-static int cpts_ptp_gettime(struct ptp_clock_info *ptp, struct timespec64 *ts)
-{
-	u64 ns;
-	unsigned long flags;
-	struct cpts_pins_info *pins = container_of(ptp, struct cpts_pins_info,
-			ptp_info);
-	struct cpts *cpts = container_of(pins, struct cpts, pins_info);
-
-	spin_lock_irqsave(&cpts->lock, flags);
-	ns = timecounter_read(&pins->tc);
-	spin_unlock_irqrestore(&cpts->lock, flags);
-
-	*ts = ns_to_timespec64(ns);
-
-	return 0;
-}
-
-static int cpts_ptp_settime(struct ptp_clock_info *ptp,
-			    const struct timespec64 *ts)
-{
-	u64 ns;
-	unsigned long flags;
-	struct cpts_pins_info *pins = container_of(ptp, struct cpts_pins_info,
-			ptp_info);
-	struct cpts *cpts = container_of(pins, struct cpts, pins_info);
-
-	ns = timespec64_to_ns(ts);
-
-	spin_lock_irqsave(&cpts->lock, flags);
-	timecounter_init(&pins->tc, &pins->cc, ns);
-	spin_unlock_irqrestore(&cpts->lock, flags);
-
-	return 0;
-}
-
 static int dmtimer_pps_probe_dt(struct dmtimer_pps *dmtpps,
 		struct platform_device *pdev)
 {
+	const __be32 *phand;
+	struct device_node* timer_node;
+	const char *tmp;
 
+	phand = of_get_property(pdev->dev.of_node, "timer", NULL);
+	if(!phand) {
+		dev_err(&pdev->dev, "Missing timer property in the DT\n");
+		return -EINVAL;
+	}
+
+	timer_node = of_find_node_by_phandle(be32_to_cpup(phand));
+	if(!timer_node) {
+		dev_err(&pdev->dev, "Unable to resolve timer\n");
+		return -EINVAL;
+	}
+
+	of_property_read_string_index(timer_node, "ti,hwmods", 0, &tmp);
+	if(!tmp) {
+		dev_err(&pdev->dev, "Timer is not a dmtimer\n");
+		return -EINVAL;
+	}
+
+	dmtpps->timer = omap_dm_timer_request_by_node(timer_node);
+	if(!dmtpps->timer) {
+		dev_err(&pdev->dev, "Request timer failed\n");
+		return -EINVAL;
+	}
+
+	return 0;
 }
 
 static int dmtimer_pps_probe(struct platform_device *pdev)
 {
-	struct dmtimer_pps *dmtpps;
+	int err;
+	struct dmtimer_pps *dmtpps = NULL;
 
 	dmtpps = devm_kzalloc(&pdev->dev, sizeof(struct dmtimer_pps),
 			GFP_KERNEL);
@@ -764,7 +679,28 @@ static int dmtimer_pps_probe(struct platform_device *pdev)
 
 	dmtpps->dev = &pdev->dev;
 
-	dmtimer_pps_probe_dt(dmtpps, pdev);
+	err = dmtimer_pps_probe_dt(dmtpps, pdev);
+	if(err)
+		return err;
+		
+	err = devm_request_irq(&pdev->dev,
+			omap_dm_timer_get_irq(dmtpps->timer),
+			dmtimer_pps_interrupt, 0, dev_name(&pdev->dev),
+			dmtpps);
+	if(err) {
+		dev_err(&pdev->dev, "IRQ request failed (%d)\n", err);
+		return err;
+	}
+
+	INIT_WORK(dmtpps.capture_work, dmtimer_pps_capture_bottom_half);
+	INIT_WORK(dmtpps.overflow_work, dmtimer_pps_overflow_bottom_half);
+
+	dmtpps->mode = PPS_CAPTUREBOTH | PPS_ECHOASSERT | PPS_ECHOCLEAR | PPS_CANWAIT;
+}
+
+static int dmtimer_pps_remove(struct platform_device *pdev)
+{
+	devm_free_irq
 }
 
 int cpts_pin_register(struct cpts *cpts)
