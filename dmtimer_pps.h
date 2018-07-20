@@ -53,12 +53,22 @@ struct cpts_perout_state {
 	bool deficit_valid;
 };
 
+struct dmtimer_settings {
+	s32 clock_source;
+	s32 pps_mode;
+	bool generate;
+	u32 ptp_index;
+	u32 ptp_channel;
+};
+
 struct dmtimer_pps {
 	struct pps_device *pps;
 	struct pps_source_info info;
 	struct omap_dm_timer *timer;
 	struct work_struct capture_work;
 	struct work_struct overflow_work;
+	struct dmtimer_settings settings;
+	struct device *cpsw_device;
 	union {
 		struct cpts_extts_state extts_state;
 		struct cpts_perout_state perout_state;

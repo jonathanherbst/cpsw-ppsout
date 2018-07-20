@@ -24,6 +24,7 @@
 #include "cpts.h"
 #include "cpts_pin.h"
 
+#define DMTIMER_PPS_NAME "dmtimer-pps"
 #define TIMER_CLOCK_OFFSET  30
 #define TIMER_CLOCK_MASK    0xC0000000
 
@@ -492,14 +493,7 @@ static int cpts_pin_disable(struct cpts_pin *pin)
 		return 0;
 
 	free_irq(omap_dm_timer_get_irq(pin->timer), pin);
-	cancel_work_sync(&pin->capture_work);
-	cancel_work_sync(&pin->overflow_work);
-	omap_dm_timer_set_int_disable(pin->timer, OMAP_TIMER_INT_CAPTURE |
-			OMAP_TIMER_INT_OVERFLOW | OMAP_TIMER_INT_MATCH);
-	omap_dm_timer_enable(pin->timer);
-	omap_dm_timer_stop(pin->timer);
-	omap_dm_timer_free(pin->timer);
-	pin->timer = NULL;
+	
 
 	err = cpts_set_hardware_push(cpts, pin->ptp_pin->index, false);
 	if (err)
@@ -701,59 +695,51 @@ static int dmtimer_pps_probe(struct platform_device *pdev)
 	INIT_WORK(dmtpps.capture_work, dmtimer_pps_capture_bottom_half);
 	INIT_WORK(dmtpps.overflow_work, dmtimer_pps_overflow_bottom_half);
 
-}
-
-static int dmtimer_pps_remove(struct platform_device *pdev)
-{
-	devm_free_irq
-}
-
-int cpts_pin_register(struct cpts *cpts)
-{
-	int i;
-
-	struct cpts_pin_info* pins = &cpts->pins_info;
-
-	pins->cc.read = cpts_pin_systim_read;
-	pins->cc.mask = CLOCKSOURCE_MASK(32);
-	pins->cc_mult = mult;
-	pins->cc.mult = mult;
-	pins->cc.shift = shift;
-
-	spin_lock_irqsave(&cpts->lock, flags);
-	timecounter_init(&pins->tc, &pins->cc, ktime_to_ns(ktime_get_real()));
-	spin_unlock_irqrestore(&cpts->lock, flags);
-
-	for (i = 0; i < CPTS_NUM_PINS; i++)
-	{
-		pins->pins[i].ptp_pin = pins->ptp_info.pin_config + i;
-		pins->pins[i].timerNode = cpts_pin_find_timer_by_name(NULL,
-				pins->pins[i].ptp_pin->name);
-		if (!pins->pins[i].timerNode)
-			pr_warn("cpts: unable to find %s in device tree",
-					pins->pins[i].ptp_pin->name);
-		pins->pins[i].timer = NULL;
-		INIT_WORK(&pins->pins[i].capture_work,
-				cpts_pin_capture_bottom_half);
-		INIT_WORK(&pins->pins[i].overflow_work,
-				cpts_pin_overflow_bottom_half);
-	}
-
-	pins->phc_index = ptp_clock_index(pins->ptp_clock);
+	platform_set_drvdata(pdev, dmtpps);
 
 	return 0;
 }
 
-void cpts_pin_unregister(struct cpts *cpts)
+static int dmtimer_pps_remove(struct platform_device *pdev)
 {
-	int i;
+	struct dmtimer_pps * dmtpps = platform_get_drvdata(pdev);
 
-	for (i = 0; i < CPTS_NUM_PINS; i++)
-	{
-		cpts_pin_disable(&cpts->pins[i]);
-		if(cpts->pins[i].timer)
-			omap_dm_timer_free(cpts->pins[i].timer);
-		if(cpts->pins[i].timerNode)
-			of_node_put(cpts->pins[i].timerNode);
+	devm_free_irq(&pdev->dev, omap_dm_timer_get_irq(dmtpps->timer), dmtpps);
+	cancel_work_sync(&dmtpps->capture_work);
+	cancel_work_sync(&dmtpps->overflow_work);
+
+	if(dmtpps->timer) {
+		omap_dm_timer_set_int_disable(dmtpps->timer,
+				OMAP_TIMER_INT_CAPTURE |
+				OMAP_TIMER_INT_OVERFLOW | OMAP_TIMER_INT_MATCH);
+		omap_dm_timer_enable(dmtpps->timer);
+		omap_dm_timer_stop(dmtpps->timer);
+		omap_dm_timer_free(dmtpps->timer);
+		dmtpps->timer = NULL;
 	}
+
+	pps_unregister_source(dmtpps->pps);
+
+	return 0;
 }
+
+static const struct of_device_id dmtimer_pps_dt_ids[] = {
+	{ .compatible = "dmtimer-pps" },
+	{},
+};
+MODULE_DEVICE_TABLE(of, dmtimer_pps_dt_ids);
+
+static struct platform_driver dmtimer_pps_driver = {
+	.probe	= dmtimer_pps_probe,
+	.remove	= dmtimer_pps_remove,
+	.driver	= {
+		.name		= DMTIMER_PPS_NAME,
+		.of_match_table	= dmtimer_pps_dt_ids,
+	},
+};
+
+module_platform_driver(dmtimer_pps_driver);
+MODULE_AUTHOR("Jonathan Herbst <jonathan_herbst@lord.com>");
+MODULE_DESCRIPTION("Use dmtimer as a PPS source and generator");
+MODULE_LICENSE("GPL");
+MODULE_VERSION("0.0.1");
