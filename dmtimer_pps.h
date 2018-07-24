@@ -23,16 +23,16 @@
 
 #include <linux/of.h>
 #include <linux/workqueue.h>
-#include <linux/ptp_clock_kernel.h>
-#include <linux/timecounter.h>
+#include <linux/mutex.h>
 
 #include <arch/arm/plat-omap/include/plat/dmtimer.h>
 
 #define CPTS_AVERAGE_LEN 4  // needs to be power of 2
 
-struct cpts_extts_state {
+struct dmtimer_pps_input_state {
+	volatile bool new_capture;
+	volatile bool new_overflow;
 	volatile u32 capture;
-	bool new_capture;
 	u32 last_capture;
 	bool last_capture_valid;
 	u32 period;
@@ -41,9 +41,8 @@ struct cpts_extts_state {
 	s32 deficit[CPTS_AVERAGE_LEN];
 };
 
-struct cpts_perout_state {
+struct dmtimer_pps_output_state {
 	u64 capture;
-	bool capture_valid;
 	u64 last_capture;
 	bool last_capture_valid;
 	u32 period;
@@ -53,35 +52,25 @@ struct cpts_perout_state {
 	bool deficit_valid;
 };
 
-struct dmtimer_settings {
+struct dmtimer_pps_settings {
 	s32 clock_source;
 	s32 pps_mode;
 	bool generate;
-	u32 ptp_index;
-	u32 ptp_channel;
 };
 
 struct dmtimer_pps {
+	int supported_pps_mode;
 	struct pps_device *pps;
 	struct pps_source_info info;
 	struct omap_dm_timer *timer;
+	struct mutex timer_mutex;
 	struct work_struct capture_work;
 	struct work_struct overflow_work;
-	struct dmtimer_settings settings;
-	struct device *cpsw_device;
+	struct dmtimer_pps_settings settings;
 	union {
-		struct cpts_extts_state extts_state;
-		struct cpts_perout_state perout_state;
+		struct dmtimer_pps_input_state input_state;
+		struct dmtimer_pps_output_state output_state;
 	};
 };
-
-extern struct ptp_pin_desc cpts_pins[CPTS_NUM_PINS];
-
-int cpts_pin_ptp_enable(struct ptp_clock_info *ptp,
-		struct ptp_clock_request *rq, int on);
-int cpts_pin_ptp_verify(struct ptp_clock_info *ptp, unsigned int pin,
-		enum ptp_pin_function func, unsigned int chan);
-int cpts_pin_register(struct cpts *cpts);
-void cpts_pin_unregister(struct cpts *cpts);
 
 #endif
