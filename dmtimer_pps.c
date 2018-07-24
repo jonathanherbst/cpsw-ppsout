@@ -272,7 +272,6 @@ static void dmtimer_pps_input_capture(struct dmtimer_pps *dmtpps)
 			pin->timer->context.tldr = state->load[indexp1];
 			mutex_unlock(&dmtpps->timer_lock);
 		}
-
 		state->index = indexp1;
 		dev_info(&dmtpps->dev,
 				"input capture %s load value %u deficit %d period %u",
