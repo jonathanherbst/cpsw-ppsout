@@ -31,11 +31,6 @@
 #include <linux/timecounter.h>
 #include <linux/interrupt.h>
 
-#ifdef CONFIG_TI_CPTS
-#include "cpts_pin.h"
-#endif
-
-
 struct cpsw_cpts {
 	u32 idver;                /* Identification and version */
 	u32 control;              /* Time sync control */

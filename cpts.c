@@ -261,16 +261,46 @@ static int cpts_ptp_settime(struct ptp_clock_info *ptp,
 static int cpts_ptp_verify(struct ptp_clock_info *ptp, unsigned int pin,
                            enum ptp_pin_function func, unsigned int chan)
 {
-	return cpts_pin_ptp_verify(ptp, pin, func, chan);
+	/* Check number of pins */
+	if (pin >= ptp->n_pins || !ptp->pin_config)
+		return -EINVAL;
+
+	/* Lock the channel */
+	if (chan != ptp->pin_config[pin].chan)
+		return -EINVAL;
+
+	/* Check function */
+	switch (func) {
+		case PTP_PF_NONE:
+		case PTP_PF_EXTTS:
+        	break;
+    	default:
+		return -EINVAL;
+	}
+
+	return 0;
 }
 
 static int cpts_ptp_enable(struct ptp_clock_info *ptp,
 			   struct ptp_clock_request *rq, int on)
 {
-	return cpts_pin_ptp_enable(ptp, rq, on);
+	int err;
+	u32 ctrl, mask;
+	struct cpts *cpts;
+	struct cpts_ptp *ptp_s = container_of(ptp, struct cpts_ptp, info);
+	cpts = container_of(ptp_s, struct cpts, clocks[ptp_s->index]);
+	switch(rq->type) {
+	case PTP_CLK_REQ_EXTTS:
+		err = cpts_set_hardware_push(cpts, rq->extts.index, on);
+		if(err)
+			return err;
+		ptp_s->hwts_en[rq->extts.index] = on;
+		return 0;
+	default:
+		break;
+	}
+	return -EOPNOTSUPP;
 }
-
-
 
 static struct ptp_clock_info cpts_info[2] = {{
 	.owner		= THIS_MODULE,
@@ -310,15 +340,17 @@ static struct ptp_clock_info cpts_info[2] = {{
 static void cpts_overflow_check(struct work_struct *work)
 {
 	u32 ctrl;
-	struct timespec64 ts;
+	struct timespec64 ts1, ts2;
 	struct cpts *cpts = container_of(work, struct cpts, overflow_work.work);
 
 	ctrl = cpts_read32(cpts, control);
 	ctrl |= CPTS_EN;
 	cpts_write32(cpts, ctrl, control);
 	cpts_write32(cpts, TS_PEND_EN, int_enable);
-	cpts_ptp_gettime(&cpts->info, &ts);
-	pr_info("cpts overflow check at %lld.%09lu\n", ts.tv_sec, ts.tv_nsec);
+	cpts_ptp_gettime(&cpts->clocks[0].info, &ts1);
+	cpts_ptp_gettime(&cpts->clocks[1].info, &ts2);
+	pr_info("cpts overflow check at clk1 %lld.%09lu clk2 %lld.%09lu\n",
+			ts1.tv_sec, ts1.tv_nsec, ts2.tv_sec, ts2.tv_nsec);
 	schedule_delayed_work(&cpts->overflow_work, CPTS_OVERFLOW_PERIOD);
 }
 
@@ -453,8 +485,8 @@ static int cpts_ptp_init(struct device *dev, struct cpts *cpts, int index,
 	ptp->info = cpts_info[index];
 	ptp->clock = ptp_clock_register(&ptp->info, dev);
 	if (IS_ERR(ptp->clock)) {
-		err = PTR_ERR(cpts->clock);
-		cpts->clock = NULL;
+		err = PTR_ERR(ptp->clock);
+		ptp->clock = NULL;
 		return err;
 	}
 
@@ -513,8 +545,6 @@ int cpts_register(struct device *dev, struct cpts *cpts,
 void cpts_unregister(struct cpts *cpts)
 {
 #ifdef CONFIG_TI_CPTS
-	cpts_pin_unregister(cpts);
-
 	if (cpts->clocks[0].clock)
 		ptp_clock_unregister(cpts->clocks[0].clock);
 	if (cpts->clocks[1].clock)
