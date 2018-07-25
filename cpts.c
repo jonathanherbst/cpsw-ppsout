@@ -123,13 +123,16 @@ int cpts_fifo_read(struct cpts *cpts, int match)
 		switch (type) {
 		case CPTS_EV_HW:
 			pr_info("CPTS_EV_HW\n");
-			pevent.timestamp = timecounter_cyc2time(&cpts->tc, event->low);
 			pevent.type = PTP_CLOCK_EXTTS;
 			pevent.index = event_port(event) - 1;
-			if(cpts->clocks[0].hwts_en[pevent.index])
+			if (cpts->clocks[0].hwts_en[pevent.index]) {
+				pevent.timestamp = timecounter_cyc2time(&cpts->clocks[0].tc, event->low);
 				ptp_clock_event(cpts->clocks[0].clock, &pevent);
-			if(cpts->clocks[1].hwts_en[pevent.index])
+			}
+			if (cpts->clocks[1].hwts_en[pevent.index]) {
+				pevent.timestamp = timecounter_cyc2time(&cpts->clocks[1].tc, event->low);
 				ptp_clock_event(cpts->clocks[1].clock, &pevent);
+			}
 			break;
 		case CPTS_EV_PUSH:
 		case CPTS_EV_RX:
@@ -285,7 +288,6 @@ static int cpts_ptp_enable(struct ptp_clock_info *ptp,
 			   struct ptp_clock_request *rq, int on)
 {
 	int err;
-	u32 ctrl, mask;
 	struct cpts *cpts;
 	struct cpts_ptp *ptp_s = container_of(ptp, struct cpts_ptp, info);
 	cpts = container_of(ptp_s, struct cpts, clocks[ptp_s->index]);
@@ -301,6 +303,33 @@ static int cpts_ptp_enable(struct ptp_clock_info *ptp,
 	}
 	return -EOPNOTSUPP;
 }
+
+static struct ptp_pin_desc cpts_pins[4] = {
+	{
+		.name = "HW1_TS_PUSH",
+		.index = 0,
+		.func = PTP_PF_NONE,
+		.chan = 0
+	},
+	{
+		.name = "HW2_TS_PUSH",
+		.index = 1,
+		.func = PTP_PF_NONE,
+		.chan = 1
+	},
+	{
+		.name = "HW3_TS_PUSH",
+		.index = 2,
+		.func = PTP_PF_NONE,
+		.chan = 2
+	},
+	{
+		.name = "HW4_TS_PUSH",
+		.index = 3,
+		.func = PTP_PF_NONE,
+		.chan = 3
+	}
+};
 
 static struct ptp_clock_info cpts_info[2] = {{
 	.owner		= THIS_MODULE,
@@ -433,7 +462,7 @@ static u64 cpts_find_ts(struct cpts *cpts, struct sk_buff *skb, int ev_type)
 		seqid = (event->high >> SEQUENCE_ID_SHIFT) & SEQUENCE_ID_MASK;
 		if (ev_type == event_type(event) &&
 		    cpts_match(skb, class, seqid, mtype)) {
-			ns = timecounter_cyc2time(&cpts->tc, event->low);
+			ns = timecounter_cyc2time(&cpts->clocks[0].tc, event->low);
 			list_del_init(&event->list);
 			list_add(&event->list, &cpts->pool);
 			break;
@@ -478,6 +507,7 @@ static int cpts_ptp_init(struct device *dev, struct cpts *cpts, int index,
 		u32 mult, u32 shift)
 {
 	int err;
+	unsigned long flags;
 	struct cpts_ptp *ptp = cpts->clocks + index;
 
 	memset(ptp, 0, sizeof(struct cpts_ptp));
@@ -514,7 +544,6 @@ int cpts_register(struct device *dev, struct cpts *cpts,
 {
 #ifdef CONFIG_TI_CPTS
 	int err, i;
-	unsigned long flags;
 
 	spin_lock_init(&cpts->lock);
 
@@ -536,8 +565,6 @@ int cpts_register(struct device *dev, struct cpts *cpts,
 
 	INIT_DELAYED_WORK(&cpts->overflow_work, cpts_overflow_check);
 	schedule_delayed_work(&cpts->overflow_work, CPTS_OVERFLOW_PERIOD);
-
-	cpts_pin_register(cpts);
 #endif
 	return 0;
 }

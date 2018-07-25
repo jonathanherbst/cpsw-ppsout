@@ -17,12 +17,15 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
+#include <linux/interrupt.h>
 #include <linux/of.h>
 #include <linux/workqueue.h>
 #include <linux/mutex.h>
 #include <linux/module.h>
 #include <linux/math64.h>
 #include <linux/timekeeping.h>
+#include <linux/pps_kernel.h>
+#include <linux/clk.h>
 
 #include <arch/arm/plat-omap/include/plat/dmtimer.h>
 
@@ -61,13 +64,13 @@ struct dmtimer_pps_settings {
 };
 
 struct dmtimer_pps {
+	const struct device *dev;
 	int supported_pps_mode;
 	struct pps_device *pps;
 	struct pps_source_info info;
 	struct omap_dm_timer *timer;
 	struct mutex timer_mutex;
-	struct work_struct capture_work;
-	struct work_struct overflow_work;
+	struct work_struct input_work;
 	struct dmtimer_pps_settings settings;
 	union {
 		struct dmtimer_pps_input_state input_state;
@@ -119,12 +122,12 @@ inline u32 dmtimer_pps_est_cyc(struct dmtimer_pps *dmtpps, u64 ns)
 	return (u32)div64_u64(ns * dmtpps->timer->rate, 1000000000);
 }
 
-static inline s64 dmtimer_pps_ktime_now()
+inline s64 dmtimer_pps_ktime_now(void)
 {
 	struct system_time_snapshot snap;
 
 	ktime_get_snapshot(&snap);
-	return snap.real;
+	return snap.real.tv64;
 }
 
 static s32 dmtimer_pps_input_calculate_deficit(
@@ -144,13 +147,6 @@ static u32 dmtimer_pps_input_calculate_period(
 	indexm1 = dmtimer_pps_index(index - 1);
 	return 0ul - state->load[indexm1] + state->deficit[index] -
 		state->deficit[indexm1];
-}
-
-static u32 dmtimer_pps_input_calculate_reload(
-		struct dmtimer_pps_input_state *state)
-{
-	unsigned long index = state->index;
-	return 
 }
 
 static u32 dmtimer_pps_input_calculate_reload(
@@ -182,25 +178,24 @@ static u32 dmtimer_pps_input_calculate_reload(
 }
 
 static u32 dmtimer_pps_output_calculate_period(
-		struct dmtimer_pps_input_state *state)
+		struct dmtimer_pps_output_state *state)
 {
 	unsigned long indexm1 = dmtimer_pps_index(state->index - 1);
-	pr_info("cpts: perout calc period, load %u, cap %llu, last cap %llu\n", state->load[indexm1], state->capture, state->last_capture);
 	return (u32)div64_u64((u64)(0ul - state->load[indexm1]) * 1000000000,
 			state->capture - state->last_capture);
 }
 
 static s32 dmtimer_pps_output_calculate_deficit(
-		struct dmtimer_pps_input_state *state)
+		struct dmtimer_pps_output_state *state)
 {
 	u64 tmp;
 	div64_u64_rem(state->capture, 1000000000, &tmp);
-	tmp = dmtimer_pps_ns_to_cycles(pin, state->period, tmp);
+	tmp = dmtimer_pps_ns_to_cycles(state->period, tmp);
 	return tmp > state->period / 2 ? -(s32)(state->period - tmp) : (s32)tmp;
 }
 
 static u32 dmtimer_pps_output_calculate_reload(
-		struct dmtimer_pps_input_state *state)
+		struct dmtimer_pps_output_state *state)
 {
 	unsigned long index;
 	unsigned long indexp1;
@@ -212,7 +207,7 @@ static u32 dmtimer_pps_output_calculate_reload(
 	period = dmtimer_pps_output_calculate_period(state);
 	state->period = dmtimer_pps_weighted_avg(state->period, 3, period, 1);
 
-	state->deficit[index] =	dmtimer_pps_perout_calculate_deficit(state);
+	state->deficit[index] =	dmtimer_pps_output_calculate_deficit(state);
 	if (!state->deficit_valid) {
 		dmtimer_pps_set_array(state->deficit, &state->deficit[index],
 				sizeof(state->deficit[index]),
@@ -222,7 +217,7 @@ static u32 dmtimer_pps_output_calculate_reload(
 	state->load[indexp1] = 0ul - (u32)(2 * state->period -
 			(0ul - state->load[index]) - state->deficit[index]);
 
-	
+	return state->load[indexp1];
 }
 
 static irqreturn_t dmtimer_pps_interrupt(int irq, void *data)
@@ -230,27 +225,20 @@ static irqreturn_t dmtimer_pps_interrupt(int irq, void *data)
 	struct dmtimer_pps *dmtpps = data;
 
 	u32 irq_status = omap_dm_timer_read_status(dmtpps->timer);
-	switch(dmtpps->state.type)
+
+	if(!dmtpps->settings.generate)
 	{
-	case PTP_CLK_REQ_EXTTS:
 		// overflow first so we don't overwrite the load value
 		if (irq_status & OMAP_TIMER_INT_OVERFLOW) {
-			schedule_work(&dmtpps->overflow_work);
+			dmtpps->input_state.new_overflow = true;
 		}
 		if (irq_status & OMAP_TIMER_INT_CAPTURE) {
-			dmtpps->output_state.capture = __omap_dm_timer_read(
+			dmtpps->input_state.capture = __omap_dm_timer_read(
 					dmtpps->timer, OMAP_TIMER_CAPTURE_REG,
 					dmtpps->timer->posted);
-			schedule_work(&dmtpps->capture_work);
+			dmtpps->input_state.new_capture = true;
 		}
-		break;
-	case PTP_CLK_REQ_PEROUT:
-		// overflow first so we don't overwrite the load value
-		if (irq_status & OMAP_TIMER_INT_OVERFLOW) {
-			schedule_work(&dmtpps->overflow_work);
-		}
-	default:
-		break;
+		schedule_work(&dmtpps->input_work);
 	}
 	// clear interrupts
 	__omap_dm_timer_write_status(dmtpps->timer, irq_status);
@@ -270,14 +258,14 @@ static void dmtimer_pps_input_capture(struct dmtimer_pps *dmtpps)
 		state->load[0] = 0ul - state->period;
 
 		// write load and load it.
-		mutex_lock_interruptible(&dmtpps->timer_lock);
+		mutex_lock(&dmtpps->timer_mutex);
 		__omap_dm_timer_write(dmtpps->timer, OMAP_TIMER_LOAD_REG,
 				state->load[0], dmtpps->timer->posted);
 		omap_dm_timer_trigger(dmtpps->timer);
-		mutex_unlock(&dmtpps->timer_lock);
+		mutex_unlock(&dmtpps->timer_mutex);
 		dmtpps->timer->context.tldr = state->load[0];
 
-		dev_info(&dmtpps->dev, "capture found pulse, %u %u",
+		dev_info(dmtpps->dev, "capture found pulse, %u %u",
 				state->period, state->load[0]);
 
 		dmtimer_pps_set_array(state->load, &state->load[0],
@@ -287,29 +275,29 @@ static void dmtimer_pps_input_capture(struct dmtimer_pps *dmtpps)
 
 		state->last_capture_valid = false;
 		return;
-	} else if (pin->extts_state.period != 0) {a
+	} else if (state->period != 0) {
 		index = state->index;
 		indexp1 = dmtimer_pps_index(index + 1);
-		reload = dmtimer_pps_output_calculate_reload(dmtpps);
+		reload = dmtimer_pps_input_calculate_reload(state);
 		// if the capture happened after overflow it's okay set the new
 		// load value here
 		if (state->deficit[index] >= 0) {
-			mutex_lock_interruptible(&dmtpps->timer_lock);
+			mutex_lock(&dmtpps->timer_mutex);
 			__omap_dm_timer_write(dmtpps->timer,
 					OMAP_TIMER_LOAD_REG,
 					reload,
-					pin->timer->posted);
-			pin->timer->context.tldr = state->load[indexp1];
-			mutex_unlock(&dmtpps->timer_lock);
+					dmtpps->timer->posted);
+			dmtpps->timer->context.tldr = state->load[indexp1];
+			mutex_unlock(&dmtpps->timer_mutex);
 		}
 		state->index = indexp1;
-		dev_info(&dmtpps->dev,
-				"input capture %s load value %u deficit %d period %u",
+		dev_info(dmtpps->dev,
+				"input capture load value %u deficit %d period %u",
 				state->load[indexp1],
 				state->deficit[index],
 				state->period);
 	}
-	state->last_capture = pin->extts_state.capture;
+	state->last_capture = state->capture;
 	state->last_capture_valid = true;
 }
 
@@ -321,7 +309,7 @@ static void dmtimer_pps_input_overflow(struct dmtimer_pps *dmtpps)
 	struct dmtimer_pps_input_state *state = &dmtpps->input_state;
 
 	if (state->period != 0) {
-		mutex_lock_interruptible(&dmtpps->timer_lock);
+		mutex_lock(&dmtpps->timer_mutex);
 		__omap_dm_timer_write(dmtpps->timer, OMAP_TIMER_LOAD_REG,
 				state->load[state->index],
 				dmtpps->timer->posted);
@@ -340,9 +328,9 @@ static void dmtimer_pps_input_overflow(struct dmtimer_pps *dmtpps)
 				dmtpps->timer->posted);
 			dmtpps->timer->context.tclr = ctrl;
 		}
-		mutex_unlock(&dmtpps->timer_lock);
+		mutex_unlock(&dmtpps->timer_mutex);
 
-		dev_info(&dmtpps->dev, "overflow deficit avg %d, start %d", avg,
+		dev_info(dmtpps->dev, "overflow deficit avg %d, start %d", avg,
 				start);
 	}
 }
@@ -352,10 +340,10 @@ static void dmtimer_pps_input_work(struct work_struct *work)
 
 	struct dmtimer_pps_input_state *state;
 	struct dmtimer_pps *dmtpps = container_of(work, struct dmtimer_pps,
-			capture_work);
+			input_work);
 	state = &dmtpps->input_state;
 
-	dev_info(&dmtpps->dev, "capture hit");
+	dev_info(dmtpps->dev, "capture hit");
 
 	if(state->new_capture) {
 		state->new_capture = false;
@@ -370,6 +358,8 @@ static void dmtimer_pps_input_work(struct work_struct *work)
 
 static void dmtimer_pps_output_capture(struct dmtimer_pps *dmtpps)
 {
+	s32 avg;
+	u32 reload;
 	unsigned long index;
 	unsigned long indexp1;
 	struct dmtimer_pps_output_state *state = &dmtpps->output_state;
@@ -381,11 +371,11 @@ static void dmtimer_pps_output_capture(struct dmtimer_pps *dmtpps)
 	__omap_dm_timer_write(dmtpps->timer, OMAP_TIMER_MATCH_REG,
 		match, dmtpps->timer->posted);
 	dmtpps->timer->context.tmar = match;*/
-	if (dmtpps->perout_state.last_capture_valid) {
-		dmtimer_pps_perout_set_reload(dmtpps);
-		__omap_dm_timer_write(pin->timer, OMAP_TIMER_LOAD_REG,
-			state->load[indexp1], pin->timer->posted);
-		pin->timer->context.tldr = state->load[indexp1];
+	if (state->last_capture_valid) {
+		reload = dmtimer_pps_output_calculate_reload(state);
+		__omap_dm_timer_write(dmtpps->timer, OMAP_TIMER_LOAD_REG,
+			reload, dmtpps->timer->posted);
+		dmtpps->timer->context.tldr = reload;
 	}
 	
 	state->index = indexp1;
@@ -393,8 +383,8 @@ static void dmtimer_pps_output_capture(struct dmtimer_pps *dmtpps)
 	state->last_capture = state->capture;
 	state->last_capture_valid = true;
 
-	avg = dmtimer_pps_deficit_avg(dmtpps->perout_state.deficit);
-	dev_info(&dmtpps->dev, "output capture deficit avg %d", avg);
+	avg = dmtimer_pps_deficit_avg(state->deficit);
+	dev_info(dmtpps->dev, "output capture deficit avg %d", avg);
 	/*if (ctrl & OMAP_TIMER_CTRL_GPOCFG &&
 			dmtimer_pps_est_ns(pin, avg) < 500) {
 		ctrl &= ~OMAP_TIMER_CTRL_GPOCFG;
@@ -410,9 +400,9 @@ static int dmtimer_pps_start_input(struct dmtimer_pps *dmtpps)
 {
 	u32 ctrl, mask = OMAP_TIMER_CTRL_TCM_BOTHEDGES;
 
-	memset(&pin->extts_state, 0, sizeof(dmtpps->input_state));
+	memset(&dmtpps->input_state, 0, sizeof(dmtpps->input_state));
 
-	omap_dm_timer_enable(pin->timer);
+	omap_dm_timer_enable(dmtpps->timer);
 
 	// set timer pin to input and setup edge to capture
 	if (dmtpps->settings.pps_mode & PPS_CAPTUREBOTH)
@@ -427,7 +417,7 @@ static int dmtimer_pps_start_input(struct dmtimer_pps *dmtpps)
 	dmtpps->timer->context.tclr = ctrl;
 	omap_dm_timer_disable(dmtpps->timer);
 
-	dev_info(&pdev->dev, "start output timer ctrl %d\n", ctrl);
+	dev_info(dmtpps->dev, "start output timer ctrl %d", ctrl);
 
 	// autoload to zero
 	omap_dm_timer_set_load(dmtpps->timer, 1, 0);
@@ -461,13 +451,12 @@ static int dmtimer_pps_start_output(struct dmtimer_pps *dmtpps)
 	// setup autoload so we overflow once per second.
 	load = 0ul - dmtpps->timer->rate;
 	omap_dm_timer_set_load(dmtpps->timer, 1, load);
-	pr_info("cpts: perout set load %u\n", load);
 
 	dmtpps->output_state.period = dmtpps->timer->rate;
 	dmtimer_pps_set_array(dmtpps->output_state.load, &load, sizeof(load),
 			CPTS_AVERAGE_LEN);
 
-	omap_dm_timer_set_int_enable(dmtpps->timer, OMAP_TIMER_INT_OVERFLOW);
+	//omap_dm_timer_set_int_enable(dmtpps->timer, OMAP_TIMER_INT_OVERFLOW);
 	omap_dm_timer_start(dmtpps->timer);
 
 	// setup an estimation of the time, the interrupt will get it more
@@ -475,7 +464,22 @@ static int dmtimer_pps_start_output(struct dmtimer_pps *dmtpps)
 	div64_u64_rem((u64)dmtimer_pps_ktime_now(), 1000000000, &time_now);
 	cycles = dmtimer_pps_est_cyc(dmtpps, time_now);
 	omap_dm_timer_write_counter(dmtpps->timer, load + cycles);
-	pr_info("cpts: perout cycles left %u\n", cycles);
+
+	return 0;
+}
+
+static int dmtimer_pps_stop(struct dmtimer_pps *dmtpps)
+{
+	mutex_lock(&dmtpps->timer_mutex);
+	omap_dm_timer_set_int_disable(dmtpps->timer,
+			OMAP_TIMER_INT_CAPTURE |
+			OMAP_TIMER_INT_OVERFLOW | OMAP_TIMER_INT_MATCH);
+	mutex_unlock(&dmtpps->timer_mutex);
+
+	cancel_work_sync(&dmtpps->input_work);
+
+	omap_dm_timer_enable(dmtpps->timer);
+	omap_dm_timer_stop(dmtpps->timer);
 
 	return 0;
 }
@@ -491,23 +495,6 @@ static int dmtimer_pps_start(struct dmtimer_pps *dmtpps)
 		return dmtimer_pps_start_output(dmtpps);
 	else
 		return dmtimer_pps_start_input(dmtpps);
-}
-
-static int dmtimer_pps_stop(struct dmtimer_pps *dmtpps)
-{
-	mutex_lock_interruptible(&dmtpps->timer_lock);
-	omap_dm_timer_set_int_disable(dmtpps->timer,
-			OMAP_TIMER_INT_CAPTURE |
-			OMAP_TIMER_INT_OVERFLOW | OMAP_TIMER_INT_MATCH);
-	mutex_unlock(&dmtpps->timer_lock);
-
-	cancel_work_sync(&dmtpps->capture_work);
-	cancel_work_sync(&dmtpps->overflow_work);
-
-	omap_dm_timer_enable(dmtpps->timer);
-	omap_dm_timer_stop(dmtpps->timer);
-
-	return 0;
 }
 
 static int dmtimer_pps_probe_dt(struct dmtimer_pps *dmtpps,
@@ -568,9 +555,9 @@ static int dmtimer_pps_probe(struct platform_device *pdev)
 	if(err)
 		return err;
 
-	dmtpps->supported_pps_mode = PPS_CAPTUREBOTH | PPS_ECHOASSERT |
+	dmtpps->info.mode = PPS_CAPTUREBOTH | PPS_ECHOASSERT |
 		PPS_ECHOCLEAR | PPS_CANWAIT | PPS_TSFMT_TSPEC;
-	dmtpps->pps = pps_register_source(&dmtpps->supported_pps_mode,
+	dmtpps->pps = pps_register_source(&dmtpps->info,
 			dmtpps->settings.pps_mode);
 	if(!dmtpps->pps)
 		return -EINVAL;
@@ -584,8 +571,7 @@ static int dmtimer_pps_probe(struct platform_device *pdev)
 		return err;
 	}
 
-	INIT_WORK(dmtpps.capture_work, dmtimer_pps_capture_bottom_half);
-	INIT_WORK(dmtpps.overflow_work, dmtimer_pps_overflow_bottom_half);
+	INIT_WORK(&dmtpps->input_work, dmtimer_pps_input_work);
 
 	platform_set_drvdata(pdev, dmtpps);
 
