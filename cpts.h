@@ -114,17 +114,26 @@ struct cpts_event {
 	u32 low;
 };
 
+#ifdef CONFIG_TI_CPTS
+struct cpts_ptp {
+	int index;
+	int phc_index;
+	struct ptp_clock_info info;
+	struct ptp_clock *clock;
+	u32 cc_mult; /* for the nominal frequency */
+	struct cyclecounter cc;
+	struct timecounter tc;
+	bool hwts_en[4];
+};
+#endif
+
 struct cpts {
 	struct cpsw_cpts __iomem *reg;
 	int tx_enable;
 	int rx_enable;
 #ifdef CONFIG_TI_CPTS
-	struct ptp_clock_info info;
-	struct ptp_clock *clock;
+	struct cpts_ptp clocks[2];
 	spinlock_t lock; /* protects time registers */
-	u32 cc_mult; /* for the nominal frequency */
-	struct cyclecounter cc;
-	struct timecounter tc;
 	struct delayed_work overflow_work;
 	int phc_index;
 	struct clk *refclk;

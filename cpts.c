@@ -126,12 +126,10 @@ int cpts_fifo_read(struct cpts *cpts, int match)
 			pevent.timestamp = timecounter_cyc2time(&cpts->tc, event->low);
 			pevent.type = PTP_CLOCK_EXTTS;
 			pevent.index = event_port(event) - 1;
-			if(cpts->pins[pevent.index].state.type == PTP_CLK_REQ_PEROUT) {
-				cpts->pins[pevent.index].perout_state.capture = pevent.timestamp;
-				cpts->pins[pevent.index].perout_state.capture_valid = true;
-			} else {
-				ptp_clock_event(cpts->clock, &pevent);
-			}
+			if(cpts->clocks[0].hwts_en[pevent.index])
+				ptp_clock_event(cpts->clocks[0].clock, &pevent);
+			if(cpts->clocks[1].hwts_en[pevent.index])
+				ptp_clock_event(cpts->clocks[1].clock, &pevent);
 			break;
 		case CPTS_EV_PUSH:
 		case CPTS_EV_RX:
@@ -152,12 +150,15 @@ int cpts_fifo_read(struct cpts *cpts, int match)
 	return type == match ? 0 : -1;
 }
 
-cycle_t cpts_systim_read_anycc(struct cpts * cpts,
-		const struct cyclecounter *cc)
+static cycle_t cpts_systim_read(const struct cyclecounter *cc)
 {
 	u64 val = 0;
 	struct cpts_event *event;
 	struct list_head *this, *next;
+	struct cpts *cpts;
+	struct cpts_ptp *ptp = container_of(cc, struct cpts_ptp, cc);
+	cpts = container_of(ptp, struct cpts, clocks[ptp->index]);
+
 
 	cpts_write32(cpts, TS_PUSH, ts_push);
 	if (cpts_fifo_read(cpts, CPTS_EV_PUSH))
@@ -176,13 +177,6 @@ cycle_t cpts_systim_read_anycc(struct cpts * cpts,
 	return val;
 }
 
-static cycle_t cpts_systim_read(const struct cyclecounter *cc)
-{
-	struct cpts *cpts = container_of(cc, struct cpts, cc);
-
-	return cpts_systim_read_anycc(cpts, cc);
-}
-
 /* PTP clock operations */
 
 static int cpts_ptp_adjfreq(struct ptp_clock_info *ptp, s32 ppb)
@@ -191,22 +185,24 @@ static int cpts_ptp_adjfreq(struct ptp_clock_info *ptp, s32 ppb)
 	u32 diff, mult;
 	int neg_adj = 0;
 	unsigned long flags;
-	struct cpts *cpts = container_of(ptp, struct cpts, info);
+	struct cpts *cpts;
+	struct cpts_ptp *ptp_s = container_of(ptp, struct cpts_ptp, info);
+	cpts = container_of(ptp_s, struct cpts, clocks[ptp_s->index]);
 
 	if (ppb < 0) {
 		neg_adj = 1;
 		ppb = -ppb;
 	}
-	mult = cpts->cc_mult;
+	mult = ptp_s->cc_mult;
 	adj = mult;
 	adj *= ppb;
 	diff = div_u64(adj, 1000000000ULL);
 
 	spin_lock_irqsave(&cpts->lock, flags);
 
-	timecounter_read(&cpts->tc);
+	timecounter_read(&ptp_s->tc);
 
-	cpts->cc.mult = neg_adj ? mult - diff : mult + diff;
+	ptp_s->cc.mult = neg_adj ? mult - diff : mult + diff;
 
 	spin_unlock_irqrestore(&cpts->lock, flags);
 
@@ -216,10 +212,12 @@ static int cpts_ptp_adjfreq(struct ptp_clock_info *ptp, s32 ppb)
 static int cpts_ptp_adjtime(struct ptp_clock_info *ptp, s64 delta)
 {
 	unsigned long flags;
-	struct cpts *cpts = container_of(ptp, struct cpts, info);
+	struct cpts *cpts;
+	struct cpts_ptp *ptp_s = container_of(ptp, struct cpts_ptp, info);
+	cpts = container_of(ptp_s, struct cpts, clocks[ptp_s->index]);
 
 	spin_lock_irqsave(&cpts->lock, flags);
-	timecounter_adjtime(&cpts->tc, delta);
+	timecounter_adjtime(&ptp_s->tc, delta);
 	spin_unlock_irqrestore(&cpts->lock, flags);
 
 	return 0;
@@ -229,10 +227,12 @@ static int cpts_ptp_gettime(struct ptp_clock_info *ptp, struct timespec64 *ts)
 {
 	u64 ns;
 	unsigned long flags;
-	struct cpts *cpts = container_of(ptp, struct cpts, info);
+	struct cpts *cpts;
+	struct cpts_ptp *ptp_s = container_of(ptp, struct cpts_ptp, info);
+	cpts = container_of(ptp_s, struct cpts, clocks[ptp_s->index]);
 
 	spin_lock_irqsave(&cpts->lock, flags);
-	ns = timecounter_read(&cpts->tc);
+	ns = timecounter_read(&ptp_s->tc);
 	spin_unlock_irqrestore(&cpts->lock, flags);
 
 	*ts = ns_to_timespec64(ns);
@@ -245,12 +245,14 @@ static int cpts_ptp_settime(struct ptp_clock_info *ptp,
 {
 	u64 ns;
 	unsigned long flags;
-	struct cpts *cpts = container_of(ptp, struct cpts, info);
+	struct cpts *cpts;
+	struct cpts_ptp *ptp_s = container_of(ptp, struct cpts_ptp, info);
+	cpts = container_of(ptp_s, struct cpts, clocks[ptp_s->index]);
 
 	ns = timespec64_to_ns(ts);
 
 	spin_lock_irqsave(&cpts->lock, flags);
-	timecounter_init(&cpts->tc, &cpts->cc, ns);
+	timecounter_init(&ptp_s->tc, &ptp_s->cc, ns);
 	spin_unlock_irqrestore(&cpts->lock, flags);
 
 	return 0;
@@ -270,14 +272,14 @@ static int cpts_ptp_enable(struct ptp_clock_info *ptp,
 
 
 
-static struct ptp_clock_info cpts_info = {
+static struct ptp_clock_info cpts_info[2] = {{
 	.owner		= THIS_MODULE,
-	.name		= "CPTS timer",
+	.name		= "CPTS timer 1",
 	.max_adj	= 1000000,
 	.n_alarm    	= 0,
-	.n_ext_ts	= CPTS_NUM_PINS,
-	.n_per_out	= CPTS_NUM_PINS,
-	.n_pins		= CPTS_NUM_PINS,
+	.n_ext_ts	= 4,
+	.n_per_out	= 0,
+	.n_pins		= 4,
 	.pps		= 0,
 	.pin_config 	= cpts_pins,
 	.adjfreq	= cpts_ptp_adjfreq,
@@ -286,7 +288,24 @@ static struct ptp_clock_info cpts_info = {
 	.settime64	= cpts_ptp_settime,
 	.enable		= cpts_ptp_enable,
 	.verify     	= cpts_ptp_verify,
-};
+},
+{
+	.owner		= THIS_MODULE,
+	.name		= "CPTS timer 2",
+	.max_adj	= 1000000,
+	.n_alarm    	= 0,
+	.n_ext_ts	= 4,
+	.n_per_out	= 0,
+	.n_pins		= 4,
+	.pps		= 0,
+	.pin_config 	= cpts_pins,
+	.adjfreq	= cpts_ptp_adjfreq,
+	.adjtime	= cpts_ptp_adjtime,
+	.gettime64	= cpts_ptp_gettime,
+	.settime64	= cpts_ptp_settime,
+	.enable		= cpts_ptp_enable,
+	.verify     	= cpts_ptp_verify,
+}};
 
 static void cpts_overflow_check(struct work_struct *work)
 {
@@ -423,7 +442,40 @@ void cpts_tx_timestamp(struct cpts *cpts, struct sk_buff *skb)
 	skb_tstamp_tx(skb, &ssh);
 }
 
+static int cpts_ptp_init(struct device *dev, struct cpts *cpts, int index,
+		u32 mult, u32 shift)
+{
+	int err;
+	struct cpts_ptp *ptp = cpts->clocks + index;
+
+	memset(ptp, 0, sizeof(struct cpts_ptp));
+
+	ptp->info = cpts_info[index];
+	ptp->clock = ptp_clock_register(&ptp->info, dev);
+	if (IS_ERR(ptp->clock)) {
+		err = PTR_ERR(cpts->clock);
+		cpts->clock = NULL;
+		return err;
+	}
+
+	ptp->index = index;
+	ptp->cc.read = cpts_systim_read;
+	ptp->cc.mask = CLOCKSOURCE_MASK(32);
+	ptp->cc_mult = mult;
+	ptp->cc.mult = mult;
+	ptp->cc.shift = shift;
+
+	spin_lock_irqsave(&cpts->lock, flags);
+	timecounter_init(&ptp->tc, &ptp->cc, ktime_to_ns(ktime_get_real()));
+	spin_unlock_irqrestore(&cpts->lock, flags);
+
+	ptp->phc_index = ptp_clock_index(ptp->clock);
+
+	return 0;
+}
+
 #endif /*CONFIG_TI_CPTS*/
+
 
 int cpts_register(struct device *dev, struct cpts *cpts,
 		  u32 mult, u32 shift)
@@ -432,20 +484,7 @@ int cpts_register(struct device *dev, struct cpts *cpts,
 	int err, i;
 	unsigned long flags;
 
-	cpts->info = cpts_info;
-	cpts->clock = ptp_clock_register(&cpts->info, dev);
-	if (IS_ERR(cpts->clock)) {
-		err = PTR_ERR(cpts->clock);
-		cpts->clock = NULL;
-		return err;
-	}
 	spin_lock_init(&cpts->lock);
-
-	cpts->cc.read = cpts_systim_read;
-	cpts->cc.mask = CLOCKSOURCE_MASK(32);
-	cpts->cc_mult = mult;
-	cpts->cc.mult = mult;
-	cpts->cc.shift = shift;
 
 	INIT_LIST_HEAD(&cpts->events);
 	INIT_LIST_HEAD(&cpts->pool);
@@ -456,14 +495,15 @@ int cpts_register(struct device *dev, struct cpts *cpts,
 	cpts_write32(cpts, CPTS_EN, control);
 	cpts_write32(cpts, TS_PEND_EN, int_enable);
 
-	spin_lock_irqsave(&cpts->lock, flags);
-	timecounter_init(&cpts->tc, &cpts->cc, ktime_to_ns(ktime_get_real()));
-	spin_unlock_irqrestore(&cpts->lock, flags);
+	err = cpts_ptp_init(dev, cpts, 0, mult, shift);
+	if(err)
+		return err;
+	err = cpts_ptp_init(dev, cpts, 1, mult, shift);
+	if(err)
+		return err;
 
 	INIT_DELAYED_WORK(&cpts->overflow_work, cpts_overflow_check);
 	schedule_delayed_work(&cpts->overflow_work, CPTS_OVERFLOW_PERIOD);
-
-	cpts->phc_index = ptp_clock_index(cpts->clock);
 
 	cpts_pin_register(cpts);
 #endif
@@ -475,10 +515,11 @@ void cpts_unregister(struct cpts *cpts)
 #ifdef CONFIG_TI_CPTS
 	cpts_pin_unregister(cpts);
 
-	if (cpts->clock) {
-		ptp_clock_unregister(cpts->clock);
-		cancel_delayed_work_sync(&cpts->overflow_work);
-	}
+	if (cpts->clocks[0].clock)
+		ptp_clock_unregister(cpts->clocks[0].clock);
+	if (cpts->clocks[1].clock)
+		ptp_clock_unregister(cpts->clocks[1].clock);
+	cancel_delayed_work_sync(&cpts->overflow_work);
 	if (cpts->refclk)
 		cpts_clk_release(cpts);
 #endif
