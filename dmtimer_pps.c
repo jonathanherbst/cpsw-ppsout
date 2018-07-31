@@ -532,6 +532,13 @@ static int dmtimer_pps_probe_dt(struct dmtimer_pps *dmtpps,
 	dmtpps->settings.pps_mode = PPS_CAPTUREASSERT;
 	dmtpps->settings.generate = false;
 
+	of_property_read_s32(pdev->dev.of_node, "clock",
+			&dmtpps->settings.clock_source);
+	of_property_read_s32(pdev->dev.of_node, "ppsmode",
+			&dmtpps->settings.pps_mode);
+	of_property_read_bool(pdev->dev.of_node, "output",
+			&dmtpps->settings.generate);
+
 	return 0;
 }
 
