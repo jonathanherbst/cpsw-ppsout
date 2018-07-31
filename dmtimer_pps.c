@@ -26,6 +26,7 @@
 #include <linux/timekeeping.h>
 #include <linux/pps_kernel.h>
 #include <linux/clk.h>
+#include <linux/configfs.h>
 
 #include <arch/arm/plat-omap/include/plat/dmtimer.h>
 
@@ -617,7 +618,46 @@ static struct platform_driver dmtimer_pps_driver = {
 	},
 };
 
-module_platform_driver(dmtimer_pps_driver);
+static struct configfs_group_operations dmtimer_pps_ops = {
+	.make_group     = &gadgets_make,
+	.drop_item      = &gadgets_drop,
+};
+static struct config_item_type dmtimer_pps_type = {
+	.ct_group_ops   = &dmtimer_pps_ops,
+	.ct_owner       = THIS_MODULE,
+};
+
+static struct configfs_subsystem dmtimer_pps_subsys = {
+	.su_group = {
+		.cg_item = {
+			.ci_namebuf = "dmtimer_pps",
+			.ci_type = &dmtimer_pps_type,
+		},
+	},
+	.su_mutex = __MUTEX_INITIALIZER(dmtimer_pps_subsys.su_mutex),
+};
+
+static int __init dmtimer_pps_init(void)
+{
+	int err;
+
+	err = platform_driver_register(&dmtimer_pps_driver);
+	if(err)
+		return err;
+	
+	config_group_init(&dmtimer_pps_subsys.su_group);
+	return configfs_register_subsystem(&dmtimer_pps_subsys);
+}
+module_init(dmtimer_pps_init);
+
+static void __exit dmtimer_pps_exit(void)
+{
+	configfs_unregister_subsystem(&dmtimer_pps_subsys);
+	platform_driver_unregister(&dmtimer_pps_driver);
+}
+module_exit(dmtimer_pps_exit);
+
+//module_platform_driver(dmtimer_pps_driver);
 MODULE_AUTHOR("Jonathan Herbst <jonathan_herbst@lord.com>");
 MODULE_DESCRIPTION("Use dmtimer as a PPS source and generator");
 MODULE_LICENSE("GPL");
