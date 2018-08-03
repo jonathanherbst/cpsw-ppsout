@@ -26,7 +26,7 @@
 #include <linux/timekeeping.h>
 #include <linux/pps_kernel.h>
 #include <linux/clk.h>
-#include <linux/configfs.h>
+#include <linux/sysfs.h>
 
 #include <arch/arm/plat-omap/include/plat/dmtimer.h>
 
@@ -543,6 +543,149 @@ static int dmtimer_pps_probe_dt(struct dmtimer_pps *dmtpps,
 	return 0;
 }
 
+static struct dmtimer_pps * dmtpps_from_device(struct device *dev)
+{
+	struct dmtimer_pps *dmtpps;
+	struct platform_device *pdev = container_of(dev,
+			struct platform_device, dev);
+	dmtpps = platform_get_drvdata(pdev);
+	return dmtpps;
+}
+
+static ssize_t dmtimer_pps_show_clock_source(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct dmtimer_pps *dmtpps = dptpps_from_device(dev);
+	switch (dmtpps->settings.clock_source)
+	{
+	case OMAP_TIMER_SRC_SYS_CLK:
+		return scnprintf(buf, PAGE_SIZE, "system\n");
+	case OMAP_TIMER_SRC_32_KHZ:
+		return scnprintf(buf, PAGE_SIZE, "32khz\n");
+	case OMAP_TIMER_SRC_EXT_CLK:
+		return scnprintf(buf, PAGE_SIZE, "external\n");
+	default:
+		break;
+	}
+	return scnprintf(buf, PAGE_SIZE, "unknown (%d)\n",
+			dmtpps->settings.clock_source);
+}
+
+static ssize_t dmtimer_pps_store_clock_source(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct dmtimer_pps *dmtpps = dmtpps_from_device(dev);
+
+	dmtimer_pps_stop(dmtpps);
+
+	if (strncmp(buf, "system", min(6, count)) == 0)
+		dmtpps->settings.clock_source = OMAP_TIMER_SRC_SYS_CLK;
+	else if (strncmp(buf, "32khz", min(5, count)) == 0)
+		dmtpps->settings.clock_source = OMAP_TIMER_SRC_32_KHZ;
+	else if (strncmp(buf, "external", min(8, count)) == 0)
+		dmtpps->settings.clock_source = OMAP_TIMER_SRC_EXT_CLK;
+	
+	dmtimer_pps_start(dmtpps);
+
+	return count;
+}
+
+static DEVICE_ATTR(clock_source, 664, dmtimer_pps_show_clock_source,
+		dmtimer_pps_store_clock_source);
+
+static ssize_t dmtimer_pps_show_edge(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	s32 edge;
+	struct dmtimer_pps *dmtpps = dmtpps_from_device(dev);
+	edge = dmtpps->settings.pps_mode & 0x0F;
+
+	switch (edge)
+	{
+	case PPS_CAPTUREASSERT:
+		return scnprintf(buf, PAGE_SIZE, "rising\n");
+	case PPS_CAPTURECLEAR:
+		return scnprintf(buf, PAGE_SIZE, "falling\n");
+	case PPS_CAPTUREBOTH:
+		return scnprintf(buf, PAGE_SIZE, "both\n");
+	default:
+		break;
+	}
+	return scnprintf(buf, PAGE_SIZE, "unknown (%d)\n", edge);
+}
+
+static ssize_t dmtimer_pps_store_edge(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	s32 edge;
+	struct dmtimer_pps *dmtpps = dmtpps_from_device(dev);
+
+	dmtimer_pps_stop(dmtpps);
+
+	if (strncmp(buf, "rising", min(6, count)) == 0)
+		edge = PPS_CAPTUREASSERT;
+	else if (strncmp(buf, "falling", min(7, count)) == 0)
+		edge = PPS_CAPTURECLEAR;
+	else if (strncmp(buf, "both", min(4, count)) == 0)
+		edge = PPS_CAPTUREBOTH;
+	dmtpps->settings.pps_mode = dmtpps->settings.pps_mode & ~0x0F | edge;
+	
+	dmtimer_pps_start(dmtpps);
+
+	return count;
+}
+
+static DEVICE_ATTR(edge, 664, dmtimer_pps_show_edge, dmtimer_pps_store_edge);
+
+static ssize_t dmtimer_pps_show_direction(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct dmtimer_pps *dmtpps = dmtpps_from_device(dev);
+
+	if (dmtpps->settings.generate)
+		return scnprintf(buf, PAGE_SIZE, "output\n");
+	return scnprintf(buf, PAGE_SIZE, "input\n");
+}
+
+static ssize_t dmtimer_pps_store_direction(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct dmtimer_pps *dmtpps = dmtpps_from_device(dev);
+
+	dmtimer_pps_stop(dmtpps);
+
+	if (strncmp(buf, "output", min(6, count)) == 0)
+		dmtpps->settings.generate = true;
+	else if (strncmp(buf, "input", min(5, count)) == 0)
+		dmtpps->settings.generate = false;
+	
+	dmtimer_pps_start(dmtpps);
+
+	return count;
+}
+
+static DEVICE_ATTR(direction, 664, dmtimer_pps_show_direction,
+		dmtimer_pps_store_direction);
+
+static ssize_t dmtimer_pps_store_capture(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	int err;
+	struct dmtimer_pps *dmtpps = dmtpps_from_device(dev);
+
+	if(!dmtpps->settings.generate)
+		return count;
+
+	err = kstrtoul(buf, 10, &dmtpps->output_state.capture);
+	if(err)
+		return count;
+	
+	dmtimer_pps_output_capture(dmtpps);
+	return count;
+}
+
+static DEVICE_ATTR(capture, 220, NULL, dmtimer_pps_store_capture);
+
 static int dmtimer_pps_probe(struct platform_device *pdev)
 {
 	int err;
@@ -569,6 +712,11 @@ static int dmtimer_pps_probe(struct platform_device *pdev)
 			dmtpps->settings.pps_mode);
 	if(!dmtpps->pps)
 		return -EINVAL;
+
+	device_create_file(&pdev->dev, &dev_attr_clock_source);
+	device_create_file(&pdev->dev, &dev_attr_edge);
+	device_create_file(&pdev->dev, &dev_attr_direction);
+	device_create_file(&pdev->dev, &dev_attr_capture);
 		
 	err = devm_request_irq(&pdev->dev,
 			omap_dm_timer_get_irq(dmtpps->timer),
@@ -618,46 +766,7 @@ static struct platform_driver dmtimer_pps_driver = {
 	},
 };
 
-static struct configfs_group_operations dmtimer_pps_ops = {
-	.make_group     = &gadgets_make,
-	.drop_item      = &gadgets_drop,
-};
-static struct config_item_type dmtimer_pps_type = {
-	.ct_group_ops   = &dmtimer_pps_ops,
-	.ct_owner       = THIS_MODULE,
-};
-
-static struct configfs_subsystem dmtimer_pps_subsys = {
-	.su_group = {
-		.cg_item = {
-			.ci_namebuf = "dmtimer_pps",
-			.ci_type = &dmtimer_pps_type,
-		},
-	},
-	.su_mutex = __MUTEX_INITIALIZER(dmtimer_pps_subsys.su_mutex),
-};
-
-static int __init dmtimer_pps_init(void)
-{
-	int err;
-
-	err = platform_driver_register(&dmtimer_pps_driver);
-	if(err)
-		return err;
-	
-	config_group_init(&dmtimer_pps_subsys.su_group);
-	return configfs_register_subsystem(&dmtimer_pps_subsys);
-}
-module_init(dmtimer_pps_init);
-
-static void __exit dmtimer_pps_exit(void)
-{
-	configfs_unregister_subsystem(&dmtimer_pps_subsys);
-	platform_driver_unregister(&dmtimer_pps_driver);
-}
-module_exit(dmtimer_pps_exit);
-
-//module_platform_driver(dmtimer_pps_driver);
+module_platform_driver(dmtimer_pps_driver);
 MODULE_AUTHOR("Jonathan Herbst <jonathan_herbst@lord.com>");
 MODULE_DESCRIPTION("Use dmtimer as a PPS source and generator");
 MODULE_LICENSE("GPL");
