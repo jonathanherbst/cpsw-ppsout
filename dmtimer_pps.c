@@ -192,7 +192,8 @@ static s32 dmtimer_pps_output_calculate_deficit(
 	u64 tmp;
 	div64_u64_rem(state->capture, 1000000000, &tmp);
 	tmp = dmtimer_pps_ns_to_cycles(state->period, tmp);
-	return tmp > state->period / 2 ? -(s32)(state->period - tmp) : (s32)tmp;
+	return tmp > state->period / 2 ? -(s32)(state->period - tmp) :
+		(s32)tmp;
 }
 
 static u32 dmtimer_pps_output_calculate_reload(
@@ -223,23 +224,35 @@ static u32 dmtimer_pps_output_calculate_reload(
 
 static irqreturn_t dmtimer_pps_interrupt(int irq, void *data)
 {
+	struct pps_event_time pps_time;
 	struct dmtimer_pps *dmtpps = data;
 
 	u32 irq_status = omap_dm_timer_read_status(dmtpps->timer);
 
-	if(!dmtpps->settings.generate)
+	if (!dmtpps->settings.generate)
 	{
 		// overflow first so we don't overwrite the load value
 		if (irq_status & OMAP_TIMER_INT_OVERFLOW) {
 			dmtpps->input_state.new_overflow = true;
 		}
 		if (irq_status & OMAP_TIMER_INT_CAPTURE) {
+			pps_get_ts(&pps_time);
+			pps_event(dmtimer->pps, &pps_time,
+					dmtimer->info.mode & PPS_CAPTUREBOTH,
+					NULL);
 			dmtpps->input_state.capture = __omap_dm_timer_read(
 					dmtpps->timer, OMAP_TIMER_CAPTURE_REG,
 					dmtpps->timer->posted);
 			dmtpps->input_state.new_capture = true;
 		}
 		schedule_work(&dmtpps->input_work);
+	} else {
+		if (irq_status & OMAP_TIMER_INT_OVERFLOW) {
+			pps_get_ts(&pps_time);
+			pps_event(dmtimer->pps, &pps_time,
+					dmtimer->info.mode & PPS_CAPTUREBOTH,
+					NULL);
+		}
 	}
 	// clear interrupts
 	__omap_dm_timer_write_status(dmtpps->timer, irq_status);
