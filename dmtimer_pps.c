@@ -470,7 +470,7 @@ static int dmtimer_pps_start_output(struct dmtimer_pps *dmtpps)
 	dmtimer_pps_set_array(dmtpps->output_state.load, &load, sizeof(load),
 			CPTS_AVERAGE_LEN);
 
-	//omap_dm_timer_set_int_enable(dmtpps->timer, OMAP_TIMER_INT_OVERFLOW);
+	omap_dm_timer_set_int_enable(dmtpps->timer, OMAP_TIMER_INT_OVERFLOW);
 	omap_dm_timer_start(dmtpps->timer);
 
 	// setup an estimation of the time, the interrupt will get it more
