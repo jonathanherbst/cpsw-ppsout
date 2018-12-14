@@ -1,1 +1,9 @@
 *.swp
+
+# linux kernel build artifacts
+*.o
+*.cmd
+*.order
+.tmp_versions
+
+.vscode

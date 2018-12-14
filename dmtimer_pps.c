@@ -237,8 +237,8 @@ static irqreturn_t dmtimer_pps_interrupt(int irq, void *data)
 		}
 		if (irq_status & OMAP_TIMER_INT_CAPTURE) {
 			pps_get_ts(&pps_time);
-			pps_event(dmtimer->pps, &pps_time,
-					dmtimer->info.mode & PPS_CAPTUREBOTH,
+			pps_event(dmtpps->pps, &pps_time,
+					dmtpps->info.mode & PPS_CAPTUREBOTH,
 					NULL);
 			dmtpps->input_state.capture = __omap_dm_timer_read(
 					dmtpps->timer, OMAP_TIMER_CAPTURE_REG,
@@ -249,8 +249,8 @@ static irqreturn_t dmtimer_pps_interrupt(int irq, void *data)
 	} else {
 		if (irq_status & OMAP_TIMER_INT_OVERFLOW) {
 			pps_get_ts(&pps_time);
-			pps_event(dmtimer->pps, &pps_time,
-					dmtimer->info.mode & PPS_CAPTUREBOTH,
+			pps_event(dmtpps->pps, &pps_time,
+					dmtpps->info.mode & PPS_CAPTUREBOTH,
 					NULL);
 		}
 	}
@@ -550,8 +550,8 @@ static int dmtimer_pps_probe_dt(struct dmtimer_pps *dmtpps,
 			&dmtpps->settings.clock_source);
 	of_property_read_s32(pdev->dev.of_node, "ppsmode",
 			&dmtpps->settings.pps_mode);
-	of_property_read_bool(pdev->dev.of_node, "output",
-			&dmtpps->settings.generate);
+	dmtpps->settings.generate = of_property_read_bool(pdev->dev.of_node,
+			"output");
 
 	return 0;
 }
@@ -568,7 +568,7 @@ static struct dmtimer_pps * dmtpps_from_device(struct device *dev)
 static ssize_t dmtimer_pps_show_clock_source(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
-	struct dmtimer_pps *dmtpps = dptpps_from_device(dev);
+	struct dmtimer_pps *dmtpps = dmtpps_from_device(dev);
 	switch (dmtpps->settings.clock_source)
 	{
 	case OMAP_TIMER_SRC_SYS_CLK:
@@ -591,11 +591,11 @@ static ssize_t dmtimer_pps_store_clock_source(struct device *dev,
 
 	dmtimer_pps_stop(dmtpps);
 
-	if (strncmp(buf, "system", min(6, count)) == 0)
+	if (strncmp(buf, "system", min(6u, count)) == 0)
 		dmtpps->settings.clock_source = OMAP_TIMER_SRC_SYS_CLK;
-	else if (strncmp(buf, "32khz", min(5, count)) == 0)
+	else if (strncmp(buf, "32khz", min(5u, count)) == 0)
 		dmtpps->settings.clock_source = OMAP_TIMER_SRC_32_KHZ;
-	else if (strncmp(buf, "external", min(8, count)) == 0)
+	else if (strncmp(buf, "external", min(8u, count)) == 0)
 		dmtpps->settings.clock_source = OMAP_TIMER_SRC_EXT_CLK;
 	
 	dmtimer_pps_start(dmtpps);
@@ -603,7 +603,7 @@ static ssize_t dmtimer_pps_store_clock_source(struct device *dev,
 	return count;
 }
 
-static DEVICE_ATTR(clock_source, 664, dmtimer_pps_show_clock_source,
+static DEVICE_ATTR(clock_source, 0664, dmtimer_pps_show_clock_source,
 		dmtimer_pps_store_clock_source);
 
 static ssize_t dmtimer_pps_show_edge(struct device *dev,
@@ -630,25 +630,25 @@ static ssize_t dmtimer_pps_show_edge(struct device *dev,
 static ssize_t dmtimer_pps_store_edge(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
-	s32 edge;
+	s32 edge = PPS_CAPTUREASSERT;
 	struct dmtimer_pps *dmtpps = dmtpps_from_device(dev);
 
 	dmtimer_pps_stop(dmtpps);
 
-	if (strncmp(buf, "rising", min(6, count)) == 0)
+	if (strncmp(buf, "rising", min(6u, count)) == 0)
 		edge = PPS_CAPTUREASSERT;
-	else if (strncmp(buf, "falling", min(7, count)) == 0)
+	else if (strncmp(buf, "falling", min(7u, count)) == 0)
 		edge = PPS_CAPTURECLEAR;
-	else if (strncmp(buf, "both", min(4, count)) == 0)
+	else if (strncmp(buf, "both", min(4u, count)) == 0)
 		edge = PPS_CAPTUREBOTH;
-	dmtpps->settings.pps_mode = dmtpps->settings.pps_mode & ~0x0F | edge;
+	dmtpps->settings.pps_mode = (dmtpps->settings.pps_mode & ~0x0F) | edge;
 	
 	dmtimer_pps_start(dmtpps);
 
 	return count;
 }
 
-static DEVICE_ATTR(edge, 664, dmtimer_pps_show_edge, dmtimer_pps_store_edge);
+static DEVICE_ATTR(edge, 0664, dmtimer_pps_show_edge, dmtimer_pps_store_edge);
 
 static ssize_t dmtimer_pps_show_direction(struct device *dev,
 		struct device_attribute *attr, char *buf)
@@ -667,9 +667,9 @@ static ssize_t dmtimer_pps_store_direction(struct device *dev,
 
 	dmtimer_pps_stop(dmtpps);
 
-	if (strncmp(buf, "output", min(6, count)) == 0)
+	if (strncmp(buf, "output", min(6u, count)) == 0)
 		dmtpps->settings.generate = true;
-	else if (strncmp(buf, "input", min(5, count)) == 0)
+	else if (strncmp(buf, "input", min(5u, count)) == 0)
 		dmtpps->settings.generate = false;
 	
 	dmtimer_pps_start(dmtpps);
@@ -677,7 +677,7 @@ static ssize_t dmtimer_pps_store_direction(struct device *dev,
 	return count;
 }
 
-static DEVICE_ATTR(direction, 664, dmtimer_pps_show_direction,
+static DEVICE_ATTR(direction, 0664, dmtimer_pps_show_direction,
 		dmtimer_pps_store_direction);
 
 static ssize_t dmtimer_pps_store_capture(struct device *dev,
@@ -689,7 +689,7 @@ static ssize_t dmtimer_pps_store_capture(struct device *dev,
 	if(!dmtpps->settings.generate)
 		return count;
 
-	err = kstrtoul(buf, 10, &dmtpps->output_state.capture);
+	err = kstrtoull(buf, 10, &dmtpps->output_state.capture);
 	if(err)
 		return count;
 	
@@ -697,7 +697,7 @@ static ssize_t dmtimer_pps_store_capture(struct device *dev,
 	return count;
 }
 
-static DEVICE_ATTR(capture, 220, NULL, dmtimer_pps_store_capture);
+static DEVICE_ATTR(capture, 0220, NULL, dmtimer_pps_store_capture);
 
 static int dmtimer_pps_probe(struct platform_device *pdev)
 {
