@@ -151,7 +151,7 @@ static u32 dmtimer_pps_input_calculate_period(
 }
 
 static u32 dmtimer_pps_input_calculate_reload(
-		struct dmtimer_pps_input_state *state)
+	struct dmtimer_pps_input_state *state)
 {
 	u32 period;
 	unsigned long indexp1;
@@ -163,23 +163,22 @@ static u32 dmtimer_pps_input_calculate_reload(
 	if (state->last_capture_valid) {
 		period = dmtimer_pps_input_calculate_period(state);
 		state->period = dmtimer_pps_weighted_avg(state->period, 3,
-				period, 1);
+			period, 1);
 	}
 	else {
 		dmtimer_pps_set_array(state->deficit, &state->deficit[index],
-				sizeof(state->deficit[index]),
-				CPTS_AVERAGE_LEN);
+			sizeof(state->deficit[index]), CPTS_AVERAGE_LEN);
 	}
 
 	state->load[indexp1] = 0ul - (u32)(2 * state->period -
-			(0ul - state->load[index]) + state->deficit[index]);
+		(0ul - state->load[index]) + state->deficit[index]);
 
 
 	return state->load[indexp1];
 }
 
 static u32 dmtimer_pps_output_calculate_period(
-		struct dmtimer_pps_output_state *state)
+	struct dmtimer_pps_output_state *state)
 {
 	unsigned long indexm1 = dmtimer_pps_index(state->index - 1);
 	return (u32)div64_u64((u64)(0ul - state->load[indexm1]) * 1000000000,
@@ -187,7 +186,7 @@ static u32 dmtimer_pps_output_calculate_period(
 }
 
 static s32 dmtimer_pps_output_calculate_deficit(
-		struct dmtimer_pps_output_state *state)
+	struct dmtimer_pps_output_state *state)
 {
 	u64 tmp;
 	div64_u64_rem(state->capture, 1000000000, &tmp);
@@ -197,7 +196,7 @@ static s32 dmtimer_pps_output_calculate_deficit(
 }
 
 static u32 dmtimer_pps_output_calculate_reload(
-		struct dmtimer_pps_output_state *state)
+	struct dmtimer_pps_output_state *state)
 {
 	unsigned long index;
 	unsigned long indexp1;
@@ -212,12 +211,11 @@ static u32 dmtimer_pps_output_calculate_reload(
 	state->deficit[index] =	dmtimer_pps_output_calculate_deficit(state);
 	if (!state->deficit_valid) {
 		dmtimer_pps_set_array(state->deficit, &state->deficit[index],
-				sizeof(state->deficit[index]),
-				CPTS_AVERAGE_LEN);
+			sizeof(state->deficit[index]), CPTS_AVERAGE_LEN);
 		state->deficit_valid = true;
 	}
 	state->load[indexp1] = 0ul - (u32)(2 * state->period -
-			(0ul - state->load[index]) - state->deficit[index]);
+		(0ul - state->load[index]) - state->deficit[index]);
 
 	return state->load[indexp1];
 }
@@ -238,11 +236,10 @@ static irqreturn_t dmtimer_pps_interrupt(int irq, void *data)
 		if (irq_status & OMAP_TIMER_INT_CAPTURE) {
 			pps_get_ts(&pps_time);
 			pps_event(dmtpps->pps, &pps_time,
-					dmtpps->info.mode & PPS_CAPTUREBOTH,
-					NULL);
+				dmtpps->info.mode & PPS_CAPTUREBOTH, NULL);
 			dmtpps->input_state.capture = __omap_dm_timer_read(
-					dmtpps->timer, OMAP_TIMER_CAPTURE_REG,
-					dmtpps->timer->posted);
+				dmtpps->timer, OMAP_TIMER_CAPTURE_REG,
+				dmtpps->timer->posted);
 			dmtpps->input_state.new_capture = true;
 		}
 		schedule_work(&dmtpps->input_work);
@@ -250,8 +247,7 @@ static irqreturn_t dmtimer_pps_interrupt(int irq, void *data)
 		if (irq_status & OMAP_TIMER_INT_OVERFLOW) {
 			pps_get_ts(&pps_time);
 			pps_event(dmtpps->pps, &pps_time,
-					dmtpps->info.mode & PPS_CAPTUREBOTH,
-					NULL);
+				dmtpps->info.mode & PPS_CAPTUREBOTH, NULL);
 		}
 	}
 	// clear interrupts

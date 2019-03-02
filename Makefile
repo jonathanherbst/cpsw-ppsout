@@ -1,5 +1,5 @@
-obj-m += ti_cpsw.o
-ti_cpsw-y := cpsw.o cpts.o
+obj-m += ti_cpsw_with_cpts.o
+ti_cpsw_with_cpts-y := cpsw.o cpts.o
 
 obj-m += dmtimer_pps.o
 

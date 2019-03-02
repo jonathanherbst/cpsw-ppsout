@@ -126,11 +126,13 @@ int cpts_fifo_read(struct cpts *cpts, int match)
 			pevent.type = PTP_CLOCK_EXTTS;
 			pevent.index = event_port(event) - 1;
 			if (cpts->clocks[0].hwts_en[pevent.index]) {
-				pevent.timestamp = timecounter_cyc2time(&cpts->clocks[0].tc, event->low);
+				pevent.timestamp = timecounter_cyc2time(
+					&cpts->clocks[0].tc, event->low);
 				ptp_clock_event(cpts->clocks[0].clock, &pevent);
 			}
 			if (cpts->clocks[1].hwts_en[pevent.index]) {
-				pevent.timestamp = timecounter_cyc2time(&cpts->clocks[1].tc, event->low);
+				pevent.timestamp = timecounter_cyc2time(
+					&cpts->clocks[1].tc, event->low);
 				ptp_clock_event(cpts->clocks[1].clock, &pevent);
 			}
 			break;
