@@ -1,7 +1,4 @@
-obj-m += ti_cpsw_with_cpts.o
-ti_cpsw_with_cpts-y := cpsw.o cpts.o
-
-obj-m += dmtimer_pps.o
+bj-m += dmtimer_ptp.o
 
 SRC := $(shell pwd)
 
