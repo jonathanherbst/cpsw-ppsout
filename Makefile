@@ -1,4 +1,4 @@
-bj-m += dmtimer_ptp.o
+obj-m += dmtimer_ptp.o
 
 SRC := $(shell pwd)
 
