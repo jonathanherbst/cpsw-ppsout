@@ -320,7 +320,7 @@ static void dmtimer_ptp_work(struct work_struct *work)
 		
 		self->state.last_load = self->state.next_load;
 		self->state.next_load = 0u - dmtimer_ptp_timecounter_ns2cyc(
-			&self->tc, ts_next);
+			&self->tc, ts_next - timestamp);
 		self->state.new_overflow = false;
 		mutex_unlock(&self->mutex);
 
@@ -393,6 +393,7 @@ static int dmtimer_ptp_start(struct dmtimer_ptp *self)
 
 	omap_dm_timer_set_int_enable(self->timer, OMAP_TIMER_INT_CAPTURE |
 		OMAP_TIMER_INT_OVERFLOW);
+	omap_dm_timer_enable(self->timer);
 	
 	self->state.counter = 0;
 	self->state.last_load = 0u - 100000000;
