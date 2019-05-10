@@ -379,7 +379,7 @@ static int dmtimer_ptp_start(struct dmtimer_ptp *self)
 	self->cc.read = dmtimer_ptp_read;
 	self->cc.mask = CLOCKSOURCE_MASK(32);
 	self->cc.mult = 0xA0000000;
-	self->cc.shift = 28;
+	self->cc.shift = 26;
 
 	// setup the timer to use the 100 MHz system clock
 	omap_dm_timer_set_source(self->timer, OMAP_TIMER_SRC_SYS_CLK);
@@ -396,7 +396,7 @@ static int dmtimer_ptp_start(struct dmtimer_ptp *self)
 	omap_dm_timer_enable(self->timer);
 	
 	self->state.counter = 0;
-	self->state.last_load = 0u - 100000000;
+	self->state.last_load = 0u - 25000000;
 	self->state.next_load = self->state.last_load;
 	__omap_dm_timer_write(self->timer, OMAP_TIMER_LOAD_REG,
 		self->state.next_load, self->timer->posted);
