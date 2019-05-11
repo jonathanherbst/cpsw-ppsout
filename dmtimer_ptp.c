@@ -29,6 +29,7 @@ struct dmtimer_ptp {
 	struct omap_dm_timer *timer;
 	struct mutex mutex;
 	struct work_struct work;
+	u32 cc_mult;
 	struct cyclecounter cc;
 	struct timecounter tc;
 	bool enable_pps;
@@ -144,7 +145,7 @@ static int dmtimer_ptp_adjfreq(struct ptp_clock_info *ptp, s32 ppb)
 	if (neg_adj)
 		ppb = -ppb;
 	
-	mult = self->cc.mult;
+	mult = self->cc_mult;
 	adj = (u64)mult * ppb;
 	diff = div_u64(adj, 1000000000ULL);
 
@@ -375,10 +376,11 @@ static int dmtimer_ptp_start(struct dmtimer_ptp *self)
 
 	dmtimer_ptp_stop(self);
 
-	// setup the time counter for the 100 MHz clock
+	// setup the time counter for the 25 MHz clock
 	self->cc.read = dmtimer_ptp_read;
 	self->cc.mask = CLOCKSOURCE_MASK(32);
-	self->cc.mult = 0xA0000000;
+	self->cc_mult = 0xA0000000;
+	self->cc.mult = self->cc_mult;
 	self->cc.shift = 26;
 
 	// setup the timer to use the 100 MHz system clock
@@ -393,15 +395,11 @@ static int dmtimer_ptp_start(struct dmtimer_ptp *self)
 
 	omap_dm_timer_set_int_enable(self->timer, OMAP_TIMER_INT_CAPTURE |
 		OMAP_TIMER_INT_OVERFLOW);
-	omap_dm_timer_enable(self->timer);
 	
 	self->state.counter = 0;
 	self->state.last_load = 0u - 25000000;
 	self->state.next_load = self->state.last_load;
-	__omap_dm_timer_write(self->timer, OMAP_TIMER_LOAD_REG,
-		self->state.next_load, self->timer->posted);
-	omap_dm_timer_write_counter(self->timer, self->state.next_load);
-	omap_dm_timer_start(self->timer);
+	omap_dm_timer_set_load_start(self->timer, 1, self->state.next_load);
 	timecounter_init(&self->tc, &self->cc, ktime_to_ns(ktime_get_real()));
 
 	return 0;
