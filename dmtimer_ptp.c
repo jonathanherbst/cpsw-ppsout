@@ -148,7 +148,7 @@ static int dmtimer_ptp_adjfreq(struct ptp_clock_info *ptp, s32 ppb)
 	if (neg_adj)
 		ppb = -ppb;
 	
-	mult = self->cc.mult;
+	mult = self->cc_mult;
 	adj = (u64)mult * ppb;
 	diff = div_u64(adj, 1000000000ULL);
 
@@ -348,7 +348,7 @@ static struct ptp_pin_desc dmtimer_ptp_pins[1] = {
 static struct ptp_clock_info dmtimer_ptp_info = {
 	.owner		= THIS_MODULE,
 	.name		= "dmtimer clock",
-	.max_adj	= 1000000,
+	.max_adj	= 100000000,
 	.n_alarm    	= 0,
 	.n_ext_ts	= 1,
 	.n_per_out	= 1,
