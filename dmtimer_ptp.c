@@ -48,7 +48,7 @@ static inline cycle_t dmtimer_ptp_timecounter_ns2cyc(
 	const struct timecounter *tc, u64 ns)
 {
 	// do the opposite of cyclecounter_cyc2ns
-	ns = div_u64((ns << tc->cc->shift) - tc->frac, tc->cc->mult);
+	ns = div_u64(ns << tc->cc->shift, tc->cc->mult);
 	return (cycle_t) (ns & tc->cc->mask);
 }
 
