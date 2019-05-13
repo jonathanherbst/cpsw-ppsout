@@ -141,14 +141,14 @@ static int dmtimer_ptp_adjfreq(struct ptp_clock_info *ptp, s32 ppb)
 	u32 diff;
 	struct dmtimer_ptp *self = container_of(ptp, struct dmtimer_ptp, info);
 
-	bool neg_adj = ppb > 0;
+	bool neg_adj = ppb < 0;
 
 	dev_info(self->dev, "adjfreq: %d, neg_adj: %d\n", ppb, neg_adj);
 
 	if (neg_adj)
 		ppb = -ppb;
 	
-	mult = self->cc_mult;
+	mult = self->cc.mult;
 	adj = (u64)mult * ppb;
 	diff = div_u64(adj, 1000000000ULL);
 
