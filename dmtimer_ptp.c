@@ -298,7 +298,7 @@ static void dmtimer_ptp_work(struct work_struct *work)
 		mutex_unlock(&self->mutex);
 		self->state.new_capture = false;
 
-		dev_info(self->dev, "capture: %ull\n", extts_event.timestamp);
+		dev_info(self->dev, "capture: %llu\n", extts_event.timestamp);
 		
 		ptp_clock_event(self->ptp, &extts_event);
 	}
@@ -325,7 +325,7 @@ static void dmtimer_ptp_work(struct work_struct *work)
 		self->state.new_overflow = false;
 		mutex_unlock(&self->mutex);
 
-		dev_info(self->dev, "overflow: %ull\n", timestamp);
+		dev_info(self->dev, "overflow: %llu\n", timestamp);
 	}
 }
 
