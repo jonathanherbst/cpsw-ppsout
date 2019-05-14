@@ -20,6 +20,7 @@ struct dmtimer_ptp_state {
 	u32 counter;
 	u32 last_load;
 	u32 next_load;
+	u32 clock_freq;
 };
 
 struct dmtimer_ptp {
@@ -57,14 +58,14 @@ static cycle_t dmtimer_ptp_read(const struct cyclecounter *cc)
 	struct dmtimer_ptp *self = container_of(cc, struct dmtimer_ptp, cc);
 
 	u32 timer_value = omap_dm_timer_read_counter(self->timer);
-	if (!self->state.new_overflow || (timer_value > (0u - self->state.clock_freq)))
+	if (!self->state.new_overflow || (timer_value > (0u - self->state.clock_freq / 2)))
 		// no new overflow, or there was an overflow but we read the timer before the overflow
 		return self->state.counter + (timer_value -
 			self->state.last_load);
-	else
-		// had an overflow that hasn't been serviced yet
-		return self->state.counter + (0u - self->state.last_load) +
-			(timer_value - self->state.next_load);
+
+	// had an overflow that hasn't been serviced yet
+	return self->state.counter + (0u - self->state.last_load) +
+		(timer_value - self->state.next_load);
 }
 
 static int dmtimer_ptp_enable_extts(struct dmtimer_ptp *self,
@@ -395,6 +396,7 @@ static int dmtimer_ptp_start(struct dmtimer_ptp *self)
 	self->cc_mult = 0xA6AAAAAA;
 	self->cc.mult = self->cc_mult;
 	self->cc.shift = 26;
+	self->state.clock_freq = 24000000;
 
 	// setup the timer to use the 24 MHz system clock
 	omap_dm_timer_set_source(self->timer, OMAP_TIMER_SRC_SYS_CLK);
