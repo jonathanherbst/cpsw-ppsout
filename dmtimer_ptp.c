@@ -383,10 +383,10 @@ static int dmtimer_ptp_start(struct dmtimer_ptp *self)
 
 	dmtimer_ptp_stop(self);
 
-	// setup the time counter for the 25 MHz clock
+	// setup the time counter for the 24 MHz clock
 	self->cc.read = dmtimer_ptp_read;
 	self->cc.mask = CLOCKSOURCE_MASK(32);
-	self->cc_mult = 0xA0000000;
+	self->cc_mult = 0xA6AAAAAA;
 	self->cc.mult = self->cc_mult;
 	self->cc.shift = 26;
 
@@ -404,7 +404,7 @@ static int dmtimer_ptp_start(struct dmtimer_ptp *self)
 		OMAP_TIMER_INT_OVERFLOW);
 	
 	self->state.counter = 0;
-	self->state.last_load = 0u - 25000000;
+	self->state.last_load = 0u - 24000000;
 	self->state.next_load = self->state.last_load;
 	omap_dm_timer_set_load_start(self->timer, 1, self->state.next_load);
 	timecounter_init(&self->tc, &self->cc, ktime_to_ns(ktime_get_real()));
