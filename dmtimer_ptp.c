@@ -339,7 +339,7 @@ static void dmtimer_ptp_work(struct work_struct *work)
 		self->state.new_overflow = false;
 		mutex_unlock(&self->mutex);
 
-		dev_info(self->dev, "overflow: %llu\n", timestamp);
+		dev_info(self->dev, "overflow: %llu, next period: %u\n", timestamp, 0u - self->state.next_load);
 	}
 }
 
