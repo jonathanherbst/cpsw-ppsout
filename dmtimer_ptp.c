@@ -58,7 +58,7 @@ static cycle_t dmtimer_ptp_read(const struct cyclecounter *cc)
 	struct dmtimer_ptp *self = container_of(cc, struct dmtimer_ptp, cc);
 
 	u32 timer_value = omap_dm_timer_read_counter(self->timer);
-	if (!self->state.new_overflow || (timer_value > (0u - self->state.clock_freq / 2)))
+	if (!self->state.new_overflow || (timer_value > (u32)(0u - self->state.clock_freq / 2u)))
 		// no new overflow, or there was an overflow but we read the timer before the overflow
 		return self->state.counter + (timer_value -
 			self->state.last_load);
