@@ -150,8 +150,6 @@ static int dmtimer_ptp_adjfreq(struct ptp_clock_info *ptp, s32 ppb)
 
 	bool neg_adj = ppb < 0;
 
-	dev_info(self->dev, "adjfreq: %d, neg_adj: %d\n", ppb, neg_adj);
-
 	if (neg_adj)
 		ppb = -ppb;
 	
@@ -159,14 +157,10 @@ static int dmtimer_ptp_adjfreq(struct ptp_clock_info *ptp, s32 ppb)
 	adj = (u64)mult * ppb;
 	diff = div_u64(adj, 1000000000ULL);
 
-	dev_info(self->dev, "adjfreq: %d, neg_adj: %d, diff: %d\n", ppb, neg_adj, diff);
-
 	mutex_lock(&self->mutex);
 	timecounter_read(&self->tc);
 	self->cc.mult = neg_adj ? mult - diff : mult + diff;
 	mutex_unlock(&self->mutex);
-
-	dev_info(self->dev, "adjfreq: %d, oldmult: %u, newmult: %u\n", ppb, self->cc_mult, self->cc.mult);
 
 	return 0;
 }
@@ -338,8 +332,6 @@ static void dmtimer_ptp_work(struct work_struct *work)
 			&self->tc, ts_next - timestamp);
 		self->state.new_overflow = false;
 		mutex_unlock(&self->mutex);
-
-		dev_info(self->dev, "overflow: %llu, next period: %u\n", timestamp, 0u - self->state.load[0]);
 	}
 }
 
@@ -360,7 +352,7 @@ static struct ptp_clock_info dmtimer_ptp_info = {
 	.n_ext_ts	= 1,
 	.n_per_out	= 1,
 	.n_pins		= 1,
-	.pps		= 0,
+	.pps		= 1,
 	.pin_config 	= dmtimer_ptp_pins,
 	.adjfreq	= dmtimer_ptp_adjfreq,
 	.adjtime	= dmtimer_ptp_adjtime,
@@ -402,8 +394,9 @@ static int dmtimer_ptp_start(struct dmtimer_ptp *self)
 	omap_dm_timer_set_source(self->timer, OMAP_TIMER_SRC_SYS_CLK);
 
 	// setup the timer to input, and enable auto reload
-	ctrl = OMAP_TIMER_CTRL_GPOCFG | OMAP_TIMER_CTRL_AR |
-		OMAP_TIMER_TRIGGER_OVERFLOW << 10;
+	ctrl = OMAP_TIMER_CTRL_GPOCFG | OMAP_TIMER_CTRL_AR | 
+		OMAP_TIMER_CTRL_PT | OMAP_TIMER_CTRL_CE |
+		OMAP_TIMER_TRIGGER_OVERFLOW_AND_COMPARE << 10;
 	__omap_dm_timer_write(self->timer, OMAP_TIMER_CTRL_REG, ctrl,
 			self->timer->posted);
 	self->timer->context.tclr = ctrl;
