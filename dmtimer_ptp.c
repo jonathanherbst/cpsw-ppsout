@@ -397,7 +397,8 @@ static int dmtimer_ptp_start(struct dmtimer_ptp *self)
 	ctrl = OMAP_TIMER_CTRL_GPOCFG | OMAP_TIMER_CTRL_AR | 
 		//OMAP_TIMER_CTRL_PT | OMAP_TIMER_CTRL_CE |
 		OMAP_TIMER_CTRL_PT | 
-		OMAP_TIMER_TRIGGER_OVERFLOW_AND_COMPARE << 10;
+		//OMAP_TIMER_TRIGGER_OVERFLOW_AND_COMPARE << 10;
+		OMAP_TIMER_TRIGGER_OVERFLOW << 10;
 	__omap_dm_timer_write(self->timer, OMAP_TIMER_CTRL_REG, ctrl,
 			self->timer->posted);
 	self->timer->context.tclr = ctrl;
