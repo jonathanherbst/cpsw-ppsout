@@ -1,5 +1,6 @@
 #include <linux/interrupt.h>
 #include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/workqueue.h>
 #include <linux/mutex.h>
 #include <linux/module.h>
@@ -7,8 +8,11 @@
 #include <linux/clocksource.h>
 #include <linux/ptp_clock_kernel.h>
 #include <linux/timecounter.h>
+#include <linux/platform_data/dmtimer-omap.h>
+#include <linux/platform_device.h>
 
-#include <arch/arm/plat-omap/include/plat/dmtimer.h>
+//#include <arch/arm/plat-omap/include/plat/dmtimer.h>
+#include <clocksource/timer-ti-dm.h>
 
 #define DMTIMER_PTP_NAME 	"dmtimer-ptp"
 
@@ -26,6 +30,7 @@ struct dmtimer_ptp {
 	const struct device *dev;
 	struct ptp_clock *ptp;
 	struct ptp_clock_info info;
+	struct omap_dm_timer_ops *timer_ops;
 	struct omap_dm_timer *timer;
 	struct mutex mutex;
 	struct work_struct work;
@@ -40,22 +45,22 @@ static inline s64 dmtimer_ptp_ktime_now(void)
 	struct system_time_snapshot snap;
 
 	ktime_get_snapshot(&snap);
-	return snap.real.tv64;
+	return snap.real;
 }
 
-static inline cycle_t dmtimer_ptp_timecounter_ns2cyc(
+static inline u32 dmtimer_ptp_timecounter_ns2cyc(
 	const struct timecounter *tc, u64 ns)
 {
 	// do the opposite of cyclecounter_cyc2ns
 	ns = ((ns << tc->cc->shift) - tc->frac) / tc->cc->mult;
-	return (cycle_t) (ns & tc->cc->mask);
+	return (u32) (ns & tc->cc->mask);
 }
 
-static cycle_t dmtimer_ptp_read(const struct cyclecounter *cc)
+static u64 dmtimer_ptp_read(const struct cyclecounter *cc)
 {
 	struct dmtimer_ptp *self = container_of(cc, struct dmtimer_ptp, cc);
 
-	u32 timer_value = omap_dm_timer_read_counter(self->timer);
+	u32 timer_value = self->timer_ops->read_counter(self->timer);
 	return self->state.counter + timer_value;
 }
 
@@ -243,10 +248,10 @@ static irqreturn_t dmtimer_ptp_interrupt(int irq, void *data)
 	struct dmtimer_ptp *self = data;
 	struct pps_event_time pps_time;
 	u32 match;
-	u32 irq_status = omap_dm_timer_read_status(self->timer);
+	u32 irq_status = self->timer_ops->read_status(self->timer);
 
 	// clear interrupts
-	__omap_dm_timer_write_status(self->timer, irq_status);
+	self->timer_ops->write_status(self->timer, irq_status);
 
 	if (irq_status & OMAP_TIMER_INT_OVERFLOW) {
 		pps_get_ts(&pps_time);
@@ -297,7 +302,7 @@ static void dmtimer_ptp_work(struct work_struct *work)
 		mutex_unlock(&self->mutex);
 		self->state.new_capture = false;
 
-		dev_info(self->dev, "capture: %ull\n", extts_event.timestamp);
+		dev_info(self->dev, "capture: %llu\n", extts_event.timestamp);
 		
 		ptp_clock_event(self->ptp, &extts_event);
 	}
@@ -358,15 +363,15 @@ static struct ptp_clock_info dmtimer_ptp_info = {
 static void dmtimer_ptp_stop(struct dmtimer_ptp *self)
 {
 	mutex_lock(&self->mutex);
-	omap_dm_timer_set_int_disable(self->timer,
+	self->timer_ops->set_int_disable(self->timer,
 			OMAP_TIMER_INT_CAPTURE |
 			OMAP_TIMER_INT_OVERFLOW | OMAP_TIMER_INT_MATCH);
 	mutex_unlock(&self->mutex);
 
 	cancel_work_sync(&self->work);
 
-	omap_dm_timer_enable(self->timer);
-	omap_dm_timer_stop(self->timer);
+	self->timer_ops->enable(self->timer);
+	self->timer_ops->stop(self->timer);
 }
 
 static int dmtimer_ptp_start(struct dmtimer_ptp *self)
@@ -382,7 +387,7 @@ static int dmtimer_ptp_start(struct dmtimer_ptp *self)
 	self->cc.shift = 28;
 
 	// setup the timer to use the 100 MHz system clock
-	omap_dm_timer_set_source(self->timer, OMAP_TIMER_SRC_SYS_CLK);
+	self->timer_ops->set_source(self->timer, OMAP_TIMER_SRC_SYS_CLK);
 
 	// setup the timer to input, and enable auto reload
 	ctrl = OMAP_TIMER_CTRL_GPOCFG | OMAP_TIMER_CTRL_AR |
@@ -391,16 +396,16 @@ static int dmtimer_ptp_start(struct dmtimer_ptp *self)
 			self->timer->posted);
 	self->timer->context.tclr = ctrl;
 
-	omap_dm_timer_set_int_enable(self->timer, OMAP_TIMER_INT_CAPTURE |
+	self->timer_ops->set_int_enable(self->timer, OMAP_TIMER_INT_CAPTURE |
 		OMAP_TIMER_INT_OVERFLOW);
 	
 	self->state.counter = 0;
 	self->state.last_load = 0u - 100000000;
 	self->state.next_load = self->state.last_load;
-	__omap_dm_timer_write(self->timer, OMAP_TIMER_LOAD_REG,
-		self->state.next_load, self->timer->posted);
-	omap_dm_timer_write_counter(self->timer, self->state.next_load);
-	omap_dm_timer_start(self->timer);
+
+	self->timer_ops->set_load(self->timer, 1, self->state.next_load);
+	self->timer_ops->enable(self->timer);
+	self->timer_ops->start(self->timer);
 	timecounter_init(&self->tc, &self->cc, ktime_to_ns(ktime_get_real()));
 
 	return 0;
@@ -410,8 +415,9 @@ static int dmtimer_ptp_probe_dt(struct dmtimer_ptp *self,
 		struct platform_device *pdev)
 {
 	const __be32 *phand;
-	const char *tmp;
-	struct device_node* timer_node;
+	struct device_node *timer_node;
+	struct platform_device *timer_pdev;
+	struct dmtimer_platform_data *timer_pdata;
 
 	// get the input device
 	phand = of_get_property(pdev->dev.of_node, "timer", NULL);
@@ -426,20 +432,44 @@ static int dmtimer_ptp_probe_dt(struct dmtimer_ptp *self,
 		return -EINVAL;
 	}
 
-	of_property_read_string_index(timer_node,
-		"ti,hwmods", 0, &tmp);
-	if(!tmp) {
+	if(!of_get_property(timer_node, "ti,timer-pwm", NULL)) {
 		dev_err(&pdev->dev, "Timer is not a dmtimer\n");
 		return -EINVAL;
 	}
 
-	self->timer = omap_dm_timer_request_by_node(timer_node);
+	timer_pdev = of_find_device_by_node(timer_node);
+	if(!timer_pdev) {
+		dev_err(&pdev->dev, "Couldn't find the omap_timer device\n");
+		return -EINVAL;
+	}
+
+	timer_pdata = dev_get_platdata(&timer_pdev->dev);
+	if(!timer_pdata)
+	{
+		dev_err(&pdev->dev, "Unable to get platform data\n");
+		return -EINVAL;
+	}
+
+	self->timer_ops = timer_pdata->timer_ops;
+
+	self->timer = self->timer_ops->request_by_node(timer_node);
 	if(!self->timer) {
 		dev_err(&pdev->dev, "Request timer failed\n");
 		return -EINVAL;
 	}
 
 	return 0;
+}
+
+static void dmtimer_ptp_timer_free(struct dmtimer_ptp *self)
+{
+	if(self->timer_ops)
+	{
+		self->timer_ops->stop(self->timer);
+		self->timer_ops->free(self->timer);
+		self->timer = NULL;
+		self->timer_ops = NULL;
+	}
 }
 
 static int dmtimer_ptp_probe(struct platform_device *pdev)
@@ -463,11 +493,10 @@ static int dmtimer_ptp_probe(struct platform_device *pdev)
 	
 	// reserve the timer interrupt
 	err = devm_request_irq(&pdev->dev,
-		omap_dm_timer_get_irq(self->timer), dmtimer_ptp_interrupt, 0,
+		self->timer_ops->get_irq(self->timer), dmtimer_ptp_interrupt, 0,
 		dev_name(&pdev->dev), self);
 	if(err) {
-		omap_dm_timer_free(self->timer);
-		self->timer = NULL;
+		dmtimer_ptp_timer_free(self);
 		dev_err(&pdev->dev, "IRQ request failed (%d)\n", err);
 		return err;
 	}
@@ -477,10 +506,9 @@ static int dmtimer_ptp_probe(struct platform_device *pdev)
 	self->ptp = ptp_clock_register(&self->info, &pdev->dev);
 	if (IS_ERR(self->ptp)) {
 		err = PTR_ERR(self->ptp);
-		devm_free_irq(&pdev->dev, omap_dm_timer_get_irq(self->timer),
+		devm_free_irq(&pdev->dev, self->timer_ops->get_irq(self->timer),
 			self);
-		omap_dm_timer_free(self->timer);
-		self->timer = NULL;
+		dmtimer_ptp_timer_free(self);
 		dev_err(&pdev->dev, "PTP clock register failed (%d)\n", err);
 		return err;
 	}
@@ -502,9 +530,7 @@ static int dmtimer_ptp_remove(struct platform_device *pdev)
 	if(self->timer) {
 		devm_free_irq(&pdev->dev, omap_dm_timer_get_irq(self->timer),
 			self);
-		dmtimer_ptp_stop(self);
-		omap_dm_timer_free(self->timer);
-		self->timer = NULL;
+		dmtimer_ptp_timer_free(self);
 	}
 
 	if (!IS_ERR(self->ptp)) {
