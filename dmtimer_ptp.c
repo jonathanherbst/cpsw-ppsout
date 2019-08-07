@@ -414,7 +414,6 @@ static int dmtimer_ptp_start(struct dmtimer_ptp *self)
 	self->state.load[0] = 0u - 24000000;
 	self->state.load[1] = self->state.load[0];
 	self->state.load[2] = self->state.load[0];
-	omap_dm_timer_set_load_start(self->timer, 1, self->state.load[0]);
 	self->timer_ops->set_load(self->timer, 1, self->state.load[0]);
 	self->timer_ops->enable(self->timer);
 	self->timer_ops->start(self->timer);
