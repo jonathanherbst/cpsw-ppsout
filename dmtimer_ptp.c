@@ -539,7 +539,7 @@ static int dmtimer_ptp_remove(struct platform_device *pdev)
 	struct dmtimer_ptp *self = platform_get_drvdata(pdev);
 
 	if(self->timer) {
-		devm_free_irq(&pdev->dev, omap_dm_timer_get_irq(self->timer),
+		devm_free_irq(&pdev->dev, self->timer_ops->get_irq(self->timer),
 			self);
 		dmtimer_ptp_timer_free(self);
 	}
