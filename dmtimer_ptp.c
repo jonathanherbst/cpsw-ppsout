@@ -30,7 +30,7 @@ struct dmtimer_ptp {
 	const struct device *dev;
 	struct ptp_clock *ptp;
 	struct ptp_clock_info info;
-	struct omap_dm_timer_ops *timer_ops;
+	const struct omap_dm_timer_ops *timer_ops;
 	struct omap_dm_timer *timer;
 	struct mutex mutex;
 	struct work_struct work;
@@ -53,7 +53,7 @@ static inline u32 dmtimer_ptp_timecounter_ns2cyc(
 	const struct timecounter *tc, u64 ns)
 {
 	// do the opposite of cyclecounter_cyc2ns
-	ns = div_u64((ns << tc->cc->shift), tc->cc->mult);
+	ns = div_u64((ns << tc->cc->shift) - tc->frac, tc->cc->mult);
 	return (u32) (ns & tc->cc->mask);
 }
 
@@ -78,39 +78,35 @@ static int dmtimer_ptp_enable_extts(struct dmtimer_ptp *self,
 	u32 ctrl;
 
 	// validate the index
-	if(rq->index != 0)
+	if (rq->index != 0)
 		return -EINVAL;
 
 	mutex_lock(&self->mutex);
-	if (on && rq->flags & PTP_ENABLE_FEATURE) { // enable
-		// make sure an edge is selected
-		if(!(rq->flags & PTP_RISING_EDGE) &&
-				!(rq->flags & PTP_FALLING_EDGE))
-			return -EINVAL;
-		
+	if (on) { // enable
 		// determine edge configuration
-		ctrl = self->timer->context.tclr &
-			~OMAP_TIMER_CTRL_TCM_BOTHEDGES;
+		ctrl = __omap_dm_timer_read(
+				self->timer, OMAP_TIMER_CTRL_REG,
+				self->timer->posted);
+		ctrl &= ~OMAP_TIMER_CTRL_TCM_BOTHEDGES;
 		// make sure pin is set as an input
 		ctrl |= OMAP_TIMER_CTRL_GPOCFG;
-		if((rq->flags & PTP_RISING_EDGE) &&
-				!(rq->flags & PTP_FALLING_EDGE))
-			ctrl |= OMAP_TIMER_CTRL_TCM_LOWTOHIGH;
-		if(!(rq->flags & PTP_RISING_EDGE) &&
+		else if (!(rq->flags & PTP_RISING_EDGE) &&
 				(rq->flags & PTP_FALLING_EDGE))
 			ctrl |= OMAP_TIMER_CTRL_TCM_HIGHTOLOW;
-		if((rq->flags & PTP_RISING_EDGE) &&
+		else if ((rq->flags & PTP_RISING_EDGE) &&
 				(rq->flags & PTP_FALLING_EDGE))
 			ctrl |= OMAP_TIMER_CTRL_TCM_BOTHEDGES;
+		else
+			ctrl |= OMAP_TIMER_CTRL_TCM_LOWTOHIGH;
 		__omap_dm_timer_write(self->timer, OMAP_TIMER_CTRL_REG, ctrl,
 			self->timer->posted);
-		self->timer->context.tclr = ctrl;
 	} else { // disable
-		ctrl = self->timer->context.tclr &
-			~OMAP_TIMER_CTRL_TCM_BOTHEDGES;
+		ctrl = __omap_dm_timer_read(
+				self->timer, OMAP_TIMER_CTRL_REG,
+				self->timer->posted);
+		ctrl &= ~OMAP_TIMER_CTRL_TCM_BOTHEDGES;
 		__omap_dm_timer_write(self->timer, OMAP_TIMER_CTRL_REG, ctrl,
 			self->timer->posted);
-		self->timer->context.tclr = ctrl;
 	}
 	mutex_unlock(&self->mutex);
 	
@@ -128,12 +124,14 @@ static int dmtimer_ptp_enable_perout(struct dmtimer_ptp *self,
 
 	mutex_lock(&self->mutex);
 	if (on && !(rq->period.sec == 0 && rq->period.nsec == 0)) { // enable
-		ctrl = self->timer->context.tclr;
+		ctrl = __omap_dm_timer_read(
+				self->timer, OMAP_TIMER_CTRL_REG,
+				self->timer->posted);
 		// make sure timer pin is set to output
 		ctrl &= ~OMAP_TIMER_CTRL_GPOCFG;
 		__omap_dm_timer_write(self->timer, OMAP_TIMER_CTRL_REG, ctrl,
 			self->timer->posted);
-		self->timer->context.tclr = ctrl;
+		//self->timer->context.tclr = ctrl;
 	}
 	mutex_unlock(&self->mutex);
 
@@ -310,8 +308,6 @@ static void dmtimer_ptp_work(struct work_struct *work)
 			self->state.capture);
 		mutex_unlock(&self->mutex);
 		self->state.new_capture = false;
-
-		dev_info(self->dev, "capture: %llu\n", extts_event.timestamp);
 		
 		ptp_clock_event(self->ptp, &extts_event);
 	}
@@ -324,7 +320,8 @@ static void dmtimer_ptp_work(struct work_struct *work)
 		mutex_lock(&self->mutex);
 		self->state.counter += 0u - self->state.load[2];
 		timestamp = timecounter_cyc2time(&self->tc,
-			self->state.counter + (0u - self->state.load[0]));
+			self->state.counter + (0u - self->state.load[1]) + (0u - self->state.load[0]));
+//			self->state.counter + (0u - self->state.load[0]));
 		seconds = div_u64_rem(timestamp, 1000000000, &ns_remainder);
 		ts_next = (seconds + 1) * 1000000000;
 		// protect against missing the next match
@@ -335,6 +332,7 @@ static void dmtimer_ptp_work(struct work_struct *work)
 		self->state.load[1] = self->state.load[0];
 		self->state.load[0] = 0u - dmtimer_ptp_timecounter_ns2cyc(
 			&self->tc, ts_next - timestamp);
+		//self->state.load[0] = 0u - 24000000u;
 		self->state.new_overflow = false;
 		mutex_unlock(&self->mutex);
 	}
@@ -399,10 +397,10 @@ static int dmtimer_ptp_start(struct dmtimer_ptp *self)
 
 	// setup the timer to input, and enable auto reload
 	ctrl = OMAP_TIMER_CTRL_GPOCFG | OMAP_TIMER_CTRL_AR | 
-		//OMAP_TIMER_CTRL_PT | OMAP_TIMER_CTRL_CE |
-		OMAP_TIMER_CTRL_PT | 
-		//OMAP_TIMER_TRIGGER_OVERFLOW_AND_COMPARE << 10;
-		OMAP_TIMER_TRIGGER_OVERFLOW << 10;
+		OMAP_TIMER_CTRL_PT | OMAP_TIMER_CTRL_CE |
+		//OMAP_TIMER_CTRL_PT | 
+		OMAP_TIMER_TRIGGER_OVERFLOW_AND_COMPARE << 10;
+		//OMAP_TIMER_TRIGGER_OVERFLOW << 10;
 	__omap_dm_timer_write(self->timer, OMAP_TIMER_CTRL_REG, ctrl,
 			self->timer->posted);
 	self->timer->context.tclr = ctrl;
@@ -416,6 +414,7 @@ static int dmtimer_ptp_start(struct dmtimer_ptp *self)
 	self->state.load[2] = self->state.load[0];
 	self->timer_ops->set_load(self->timer, 1, self->state.load[0]);
 	self->timer_ops->enable(self->timer);
+	self->timer_ops->write_counter(self->timer, self->state.load[0]);
 	self->timer_ops->start(self->timer);
 	timecounter_init(&self->tc, &self->cc, ktime_to_ns(ktime_get_real()));
 
