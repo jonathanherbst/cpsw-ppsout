@@ -90,7 +90,7 @@ static int dmtimer_ptp_enable_extts(struct dmtimer_ptp *self,
 		ctrl &= ~OMAP_TIMER_CTRL_TCM_BOTHEDGES;
 		// make sure pin is set as an input
 		ctrl |= OMAP_TIMER_CTRL_GPOCFG;
-		else if (!(rq->flags & PTP_RISING_EDGE) &&
+		if (!(rq->flags & PTP_RISING_EDGE) &&
 				(rq->flags & PTP_FALLING_EDGE))
 			ctrl |= OMAP_TIMER_CTRL_TCM_HIGHTOLOW;
 		else if ((rq->flags & PTP_RISING_EDGE) &&
