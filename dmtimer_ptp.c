@@ -305,7 +305,7 @@ static void dmtimer_ptp_work(struct work_struct *work)
 	if (self->state.new_capture) {
 		mutex_lock(&self->mutex);
 		extts_event.timestamp = timecounter_cyc2time(&self->tc,
-			self->state.capture);
+			self->state.counter + (self->state.capture - self->state.load[2]));
 		mutex_unlock(&self->mutex);
 		self->state.new_capture = false;
 		
@@ -319,7 +319,6 @@ static void dmtimer_ptp_work(struct work_struct *work)
 		// generate the next load value
 		mutex_lock(&self->mutex);
 		self->state.counter += 0u - self->state.load[2];
-		timestamp = timecounter_read(&self->tc); // read the tc so the time gets updated in the time counter
 		timestamp = timecounter_cyc2time(&self->tc,
 			self->state.counter + (0u - self->state.load[1]) + (0u - self->state.load[0]));
 		seconds = div_u64_rem(timestamp, 1000000000, &ns_remainder);
@@ -334,6 +333,7 @@ static void dmtimer_ptp_work(struct work_struct *work)
 			&self->tc, ts_next - timestamp);
 		//self->state.load[0] = 0u - 24000000u;
 		self->state.new_overflow = false;
+		timestamp = timecounter_read(&self->tc); // read the tc so the time gets updated in the time counter
 		mutex_unlock(&self->mutex);
 	}
 }
