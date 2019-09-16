@@ -319,9 +319,9 @@ static void dmtimer_ptp_work(struct work_struct *work)
 		// generate the next load value
 		mutex_lock(&self->mutex);
 		self->state.counter += 0u - self->state.load[2];
+		timestamp = timecounter_read(&self->tc); // read the tc so the time gets updated in the time counter
 		timestamp = timecounter_cyc2time(&self->tc,
 			self->state.counter + (0u - self->state.load[1]) + (0u - self->state.load[0]));
-//			self->state.counter + (0u - self->state.load[0]));
 		seconds = div_u64_rem(timestamp, 1000000000, &ns_remainder);
 		ts_next = (seconds + 1) * 1000000000;
 		// protect against missing the next match
